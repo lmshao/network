@@ -2,9 +2,11 @@
 // Copyright © 2024 SHAO Liming <lmshao@163.com>. All rights reserved.
 //
 
+#include <unistd.h>
+
 #include <iostream>
 #include <thread>
-#include <unistd.h>
+
 #include "udp_server.h"
 
 class MyListener : public IServerListener {
@@ -26,17 +28,11 @@ public:
     void OnAccept(std::shared_ptr<Session> clientSession) override {}
     void OnReceive(std::shared_ptr<Session> clientSession, std::shared_ptr<DataBuffer> buffer) override
     {
-        std::cout << "----------" << std::endl;
         std::cout << "pid: " << std::this_thread::get_id() << std::endl;
         std::cout << "OnReceive " << buffer->Size() << " bytes from " << clientSession->ClientInfo() << std::endl;
-        std::cout << buffer->Data() << std::endl;
-        std::cout << "----------" << std::endl;
-        if (clientSession->Send(buffer)) {
-            std::cout << "send echo data ok." << std::endl;
-        } else {
+        if (!clientSession->Send(buffer)) {
             std::cout << "send echo data failed." << std::endl;
         }
-        std::cout << "." << std::endl;
     }
 };
 
