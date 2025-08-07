@@ -11,6 +11,19 @@
 #ifndef NETWORK_EVENT_REACTOR_H
 #define NETWORK_EVENT_REACTOR_H
 
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#pragma comment(lib, "ws2_32.lib")
+// Windows IOCP specific structures - simplified for event-driven mode
+#else
+#include <sys/epoll.h>
+#include <sys/eventfd.h>
+#include <unistd.h>
+#endif
+
 #include <condition_variable>
 #include <functional>
 #include <memory>
@@ -57,18 +70,25 @@ public:
 private:
     void Run();
     void DispatchEvent(int fd, int events);
+    void WakeupEventLoop();
 
+#ifdef _WIN32
+    HANDLE iocpHandle_ = INVALID_HANDLE_VALUE;
+    HANDLE shutdownEvent_ = INVALID_HANDLE_VALUE;
+    std::unordered_map<SOCKET, std::shared_ptr<EventHandler>> handlers_;
+#else
     int epollFd_ = -1;
     int wakeupFd_ = -1;
+    std::unordered_map<int, std::shared_ptr<EventHandler>> handlers_;
+#endif
+
     bool running_ = false;
 
     std::shared_mutex mutex_;
     std::mutex signalMutex_;
     std::condition_variable runningSignal_;
 
-    std::unordered_map<int, std::shared_ptr<EventHandler>> handlers_;
-
-    std::unique_ptr<std::thread> epollThread_;
+    std::unique_ptr<std::thread> eventThread_;
 };
 
 } // namespace lmshao::network

@@ -10,29 +10,74 @@
 
 #include "event_reactor.h"
 
+#ifdef _WIN32
 #include <errno.h>
-#include <sys/epoll.h>
-#include <sys/eventfd.h>
+#else
+#include <errno.h>
 #include <sys/prctl.h>
-#include <unistd.h>
 
 #include <cstring>
+#endif
 
 #include "log.h"
 
 namespace {
+#ifdef _WIN32
+const HANDLE INVALID_IOCP_HANDLE = INVALID_HANDLE_VALUE;
+const HANDLE INVALID_SHUTDOWN_EVENT = INVALID_HANDLE_VALUE;
+constexpr DWORD IOCP_WAIT_EVENT_NUMS_MAX = 1024;
+#else
 constexpr int INVALID_WAKEUP_FD = -1;
 constexpr int EPOLL_WAIT_EVENT_NUMS_MAX = 1024;
+#endif
 } // namespace
 
 namespace lmshao::network {
-EventReactor::EventReactor() : wakeupFd_(INVALID_WAKEUP_FD)
+
+EventReactor::EventReactor()
+#ifdef _WIN32
+    : iocpHandle_(INVALID_IOCP_HANDLE), shutdownEvent_(INVALID_SHUTDOWN_EVENT)
+#else
+    : wakeupFd_(INVALID_WAKEUP_FD)
+#endif
 {
+#ifdef _WIN32
+    // Initialize Winsock
+    WSADATA wsaData;
+    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
+        NETWORK_LOGE("WSAStartup failed");
+        return;
+    }
+
+    // Create shutdown event
+    shutdownEvent_ = CreateEvent(NULL, TRUE, FALSE, NULL);
+    if (shutdownEvent_ == INVALID_HANDLE_VALUE) {
+        NETWORK_LOGE("CreateEvent failed: %lu", GetLastError());
+        return;
+    }
+#else
     wakeupFd_ = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
-    epollThread_ = std::make_unique<std::thread>([&]() { this->Run(); });
+#endif
+
+    eventThread_ = std::make_unique<std::thread>([&]() { this->Run(); });
     SetThreadName("EventReactor");
     std::unique_lock<std::mutex> taskLock(signalMutex_);
     runningSignal_.wait_for(taskLock, std::chrono::milliseconds(5), [this] { return this->running_ == true; });
+}
+
+void EventReactor::WakeupEventLoop()
+{
+    // Unified wakeup mechanism for event loop
+#ifdef _WIN32
+    if (shutdownEvent_ != INVALID_SHUTDOWN_EVENT) {
+        SetEvent(shutdownEvent_);
+    }
+#else
+    if (wakeupFd_ != INVALID_WAKEUP_FD) {
+        uint64_t one = 1;
+        write(wakeupFd_, &one, sizeof(one));
+    }
+#endif
 }
 
 EventReactor::~EventReactor()
@@ -40,15 +85,27 @@ EventReactor::~EventReactor()
     NETWORK_LOGD("enter");
     running_ = false;
 
-    if (wakeupFd_ != INVALID_WAKEUP_FD) {
-        uint64_t one = 1;
-        write(wakeupFd_, &one, sizeof(one));
+    // Use unified wakeup mechanism
+    WakeupEventLoop();
+
+    if (eventThread_ && eventThread_->joinable()) {
+        eventThread_->join();
     }
 
-    if (epollThread_ && epollThread_->joinable()) {
-        epollThread_->join();
+    // Cleanup resources
+#ifdef _WIN32
+    if (shutdownEvent_ != INVALID_SHUTDOWN_EVENT) {
+        CloseHandle(shutdownEvent_);
+        shutdownEvent_ = INVALID_SHUTDOWN_EVENT;
     }
 
+    if (iocpHandle_ != INVALID_IOCP_HANDLE) {
+        CloseHandle(iocpHandle_);
+        iocpHandle_ = INVALID_IOCP_HANDLE;
+    }
+
+    WSACleanup();
+#else
     if (wakeupFd_ != INVALID_WAKEUP_FD) {
         close(wakeupFd_);
         wakeupFd_ = INVALID_WAKEUP_FD;
@@ -58,14 +115,31 @@ EventReactor::~EventReactor()
         close(epollFd_);
         epollFd_ = -1;
     }
+#endif
 }
 
 void EventReactor::Run()
 {
     NETWORK_LOGD("enter");
+
+#ifdef _WIN32
+    // Windows IOCP initialization
+    iocpHandle_ = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, 0, 0);
+    if (iocpHandle_ == INVALID_HANDLE_VALUE) {
+        NETWORK_LOGE("CreateIoCompletionPort failed: %lu", GetLastError());
+        return;
+    }
+
+    running_ = true;
+    runningSignal_.notify_all();
+
+    DWORD bytesTransferred;
+    ULONG_PTR completionKey;
+    LPOVERLAPPED overlapped;
+#else
+    // Linux epoll initialization
     epollFd_ = epoll_create1(0);
     if (epollFd_ == -1) {
-        perror("epoll_create");
         NETWORK_LOGE("epoll_create %s", strerror(errno));
         return;
     }
@@ -81,8 +155,51 @@ void EventReactor::Run()
     running_ = true;
     runningSignal_.notify_all();
     struct epoll_event readyEvents[EPOLL_WAIT_EVENT_NUMS_MAX] = {};
+#endif
 
+    // Common event loop for both Windows and Linux
     while (running_) {
+#ifdef _WIN32
+        // Windows IOCP event processing
+        BOOL result = GetQueuedCompletionStatus(iocpHandle_, &bytesTransferred, &completionKey, &overlapped, 100);
+
+        if (!result) {
+            DWORD error = GetLastError();
+            if (error == WAIT_TIMEOUT) {
+                continue;
+            }
+            if (error == ERROR_ABANDONED_WAIT_0) {
+                // Shutdown event signaled
+                break;
+            }
+            NETWORK_LOGE("GetQueuedCompletionStatus failed: %lu", error);
+            continue;
+        }
+
+        if (overlapped == NULL) {
+            // Shutdown signal
+            break;
+        }
+
+        // Use completionKey as socket for simple event-driven mode
+        SOCKET socket = static_cast<SOCKET>(completionKey);
+
+        // For IOCP, we need to determine if it's a read or write event
+        // Since we don't have explicit operation tracking, we'll check socket state
+        // and dispatch appropriate events based on what's likely needed
+
+        // Check if socket has data to read (simplified approach)
+        // In a real implementation, you might want to use WSAEnumNetworkEvents or similar
+        // For now, we'll dispatch read event first, then write if needed
+
+        // Dispatch read event
+        DispatchEvent(static_cast<int>(socket), static_cast<int>(EventType::READ));
+
+        // Optionally dispatch write event if socket is writable
+        // This is a simplified approach - in practice you might want more sophisticated logic
+        DispatchEvent(static_cast<int>(socket), static_cast<int>(EventType::WRITE));
+#else
+        // Linux epoll event processing
         nfds = epoll_wait(epollFd_, readyEvents, EPOLL_WAIT_EVENT_NUMS_MAX, 100);
         if (nfds == -1) {
             if (errno == EINTR) {
@@ -106,26 +223,24 @@ void EventReactor::Run()
                 continue;
             }
 
-            std::shared_lock<std::shared_mutex> lock(mutex_);
-            auto handlerIt = handlers_.find(readyFd);
-            if (handlerIt != handlers_.end()) {
-                auto handler = handlerIt->second;
-                lock.unlock();
-                DispatchEvent(readyFd, events);
-                continue;
-            }
+            // Reuse DispatchEvent for event handling
+            DispatchEvent(readyFd, events);
         }
+#endif
     }
 }
 
 void EventReactor::SetThreadName(const std::string &name)
 {
-    if (epollThread_ && !name.empty()) {
+    if (eventThread_ && !name.empty()) {
+#ifndef _WIN32
         std::string threadName = name;
         if (threadName.size() > 15) {
             threadName = threadName.substr(0, 15);
         }
-        pthread_setname_np(epollThread_->native_handle(), threadName.c_str());
+        pthread_setname_np(eventThread_->native_handle(), threadName.c_str());
+#endif
+        NETWORK_LOGD("Thread name set to: %s", name.c_str());
     }
 }
 
@@ -136,6 +251,33 @@ bool EventReactor::RegisterHandler(std::shared_ptr<EventHandler> handler)
         return false;
     }
 
+#ifdef _WIN32
+    SOCKET socket = static_cast<SOCKET>(static_cast<UINT_PTR>(handler->GetHandle()));
+    int events = handler->GetEvents();
+    NETWORK_LOGD("[%p] Register handler for socket:%llu, events:0x%x", this, static_cast<unsigned long long>(socket),
+                 events);
+
+    if (!running_) {
+        NETWORK_LOGE("Reactor has exited");
+        return false;
+    }
+
+    // Associate socket with IOCP
+    HANDLE result =
+        CreateIoCompletionPort(reinterpret_cast<HANDLE>(socket), iocpHandle_, static_cast<ULONG_PTR>(socket), 0);
+
+    if (result == NULL) {
+        NETWORK_LOGE("CreateIoCompletionPort failed for socket %llu: %lu", static_cast<unsigned long long>(socket),
+                     GetLastError());
+        return false;
+    }
+
+    std::unique_lock<std::shared_mutex> lock(mutex_);
+    handlers_.emplace(socket, handler);
+
+    NETWORK_LOGD("Handler registered successfully for socket:%llu", static_cast<unsigned long long>(socket));
+    return true;
+#else
     int fd = handler->GetHandle();
     int events = handler->GetEvents();
     NETWORK_LOGD("[%p] Register handler for fd:%d, events:0x%x", this, fd, events);
@@ -175,10 +317,26 @@ bool EventReactor::RegisterHandler(std::shared_ptr<EventHandler> handler)
 
     NETWORK_LOGD("Handler registered successfully for fd:%d", fd);
     return true;
+#endif
 }
 
 bool EventReactor::RemoveHandler(int fd)
 {
+#ifdef _WIN32
+    SOCKET socket = static_cast<SOCKET>(static_cast<UINT_PTR>(fd));
+    NETWORK_LOGD("Remove handler for socket(%llu)", static_cast<unsigned long long>(socket));
+
+    std::unique_lock<std::shared_mutex> lock(mutex_);
+    auto it = handlers_.find(socket);
+    if (it == handlers_.end()) {
+        NETWORK_LOGW("Handler not found for socket:%llu", static_cast<unsigned long long>(socket));
+        return false;
+    }
+    handlers_.erase(it);
+
+    NETWORK_LOGD("Handler removed successfully for socket:%llu", static_cast<unsigned long long>(socket));
+    return true;
+#else
     NETWORK_LOGD("Remove handler for fd(%d)", fd);
 
     std::unique_lock<std::shared_mutex> lock(mutex_);
@@ -203,10 +361,32 @@ bool EventReactor::RemoveHandler(int fd)
 
     NETWORK_LOGD("Handler removed successfully for fd:%d", fd);
     return true;
+#endif
 }
 
 bool EventReactor::ModifyHandler(int fd, int events)
 {
+#ifdef _WIN32
+    SOCKET socket = static_cast<SOCKET>(static_cast<UINT_PTR>(fd));
+    NETWORK_LOGD("Modify handler for socket(%llu), events:0x%x", static_cast<unsigned long long>(socket), events);
+
+    if (!running_) {
+        NETWORK_LOGE("Reactor has exited");
+        return false;
+    }
+
+    std::unique_lock<std::shared_mutex> lock(mutex_);
+    auto it = handlers_.find(socket);
+    if (it == handlers_.end()) {
+        NETWORK_LOGW("Handler not found for socket:%llu during modify", static_cast<unsigned long long>(socket));
+        return false;
+    }
+
+    // For IOCP, we don't need to modify events like in epoll
+    // The completion will be handled when the async operation completes
+    NETWORK_LOGD("Handler modified successfully for socket:%llu", static_cast<unsigned long long>(socket));
+    return true;
+#else
     NETWORK_LOGD("Modify handler for fd(%d), events:0x%x", fd, events);
 
     if (!running_) {
@@ -248,21 +428,52 @@ bool EventReactor::ModifyHandler(int fd, int events)
 
     NETWORK_LOGD("Handler modified successfully for fd:%d", fd);
     return true;
+#endif
 }
 
 void EventReactor::DispatchEvent(int fd, int events)
 {
+#ifdef _WIN32
+    // Use safer type conversion to avoid precision loss
+    SOCKET socket = static_cast<SOCKET>(static_cast<UINT_PTR>(fd));
+    std::shared_lock<std::shared_mutex> lock(mutex_);
+    auto it = handlers_.find(socket);
+    if (it == handlers_.end()) {
+        NETWORK_LOGW("Handler not found for socket:%llu", static_cast<unsigned long long>(socket));
+        return;
+    }
+#else
     std::shared_lock<std::shared_mutex> lock(mutex_);
     auto it = handlers_.find(fd);
     if (it == handlers_.end()) {
         NETWORK_LOGW("Handler not found for fd:%d", fd);
         return;
     }
+#endif
 
     auto handler = it->second;
     lock.unlock();
 
     try {
+#ifdef _WIN32
+        // Windows: events are EventType enum values
+        if (events & static_cast<int>(EventType::READ)) {
+            handler->HandleRead(fd);
+        }
+
+        if (events & static_cast<int>(EventType::WRITE)) {
+            handler->HandleWrite(fd);
+        }
+
+        if (events & static_cast<int>(EventType::ERROR)) {
+            handler->HandleError(fd);
+        }
+
+        if (events & static_cast<int>(EventType::CLOSE)) {
+            handler->HandleClose(fd);
+        }
+#else
+        // Linux: events are epoll event flags
         if (events & EPOLLIN) {
             handler->HandleRead(fd);
         }
@@ -278,10 +489,12 @@ void EventReactor::DispatchEvent(int fd, int events)
         if (events & (EPOLLHUP | EPOLLRDHUP)) {
             handler->HandleClose(fd);
         }
+#endif
     } catch (const std::exception &e) {
         NETWORK_LOGE("Exception in event handler for fd %d: %s", fd, e.what());
     } catch (...) {
         NETWORK_LOGE("Unknown exception in event handler for fd %d", fd);
     }
 }
+
 } // namespace lmshao::network

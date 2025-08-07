@@ -13,7 +13,13 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 # Compiler flags
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-error -Wno-format-truncation")
+if(MSVC)
+    # Windows MSVC compiler flags
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /W3")
+else()
+    # GCC/Clang compiler flags
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-error -Wno-format-truncation")
+endif()
 
 # Debug-specific flags
 set(CMAKE_CXX_FLAGS_DEBUG "-g -O0 -DDEBUG")
