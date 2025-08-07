@@ -181,23 +181,13 @@ void EventReactor::Run()
             break;
         }
 
-        // Use completionKey as socket for simple event-driven mode
-        SOCKET socket = static_cast<SOCKET>(completionKey);
+        // Use completionKey to decode socket and event type
+        IocpEventInfo eventInfo = IocpEventInfo::Decode(completionKey);
+        SOCKET socket = eventInfo.socket;
+        EventType eventType = eventInfo.eventType;
 
-        // For IOCP, we need to determine if it's a read or write event
-        // Since we don't have explicit operation tracking, we'll check socket state
-        // and dispatch appropriate events based on what's likely needed
-
-        // Check if socket has data to read (simplified approach)
-        // In a real implementation, you might want to use WSAEnumNetworkEvents or similar
-        // For now, we'll dispatch read event first, then write if needed
-
-        // Dispatch read event
-        DispatchEvent(static_cast<int>(socket), static_cast<int>(EventType::READ));
-
-        // Optionally dispatch write event if socket is writable
-        // This is a simplified approach - in practice you might want more sophisticated logic
-        DispatchEvent(static_cast<int>(socket), static_cast<int>(EventType::WRITE));
+        // Dispatch the specific event type
+        DispatchEvent(static_cast<int>(socket), static_cast<int>(eventType));
 #else
         // Linux epoll event processing
         nfds = epoll_wait(epollFd_, readyEvents, EPOLL_WAIT_EVENT_NUMS_MAX, 100);
@@ -252,10 +242,9 @@ bool EventReactor::RegisterHandler(std::shared_ptr<EventHandler> handler)
     }
 
 #ifdef _WIN32
-    SOCKET socket = static_cast<SOCKET>(static_cast<UINT_PTR>(handler->GetHandle()));
+    socket_t socket = handler->GetHandle();
     int events = handler->GetEvents();
-    NETWORK_LOGD("[%p] Register handler for socket:%llu, events:0x%x", this, static_cast<unsigned long long>(socket),
-                 events);
+    NETWORK_LOGD("[%p] Register handler for socket:%llu, events:0x%x", this, cast_socket_t(socket), events);
 
     if (!running_) {
         NETWORK_LOGE("Reactor has exited");
@@ -267,7 +256,24 @@ bool EventReactor::RegisterHandler(std::shared_ptr<EventHandler> handler)
         CreateIoCompletionPort(reinterpret_cast<HANDLE>(socket), iocpHandle_, static_cast<ULONG_PTR>(socket), 0);
 
     if (result == NULL) {
-        NETWORK_LOGE("CreateIoCompletionPort failed for socket %llu: %lu", static_cast<unsigned long long>(socket),
+        NETWORK_LOGE("CreateIoCompletionPort failed for socket %llu: %lu", cast_socket_t(socket), GetLastError());
+        return false;
+    }
+
+    // Register for read events
+    IocpEventInfo readInfo(socket, lmshao::network::EventType::READ);
+    HANDLE readResult = CreateIoCompletionPort(reinterpret_cast<HANDLE>(socket), iocpHandle_, readInfo.Encode(), 0);
+    if (readResult == NULL) {
+        NETWORK_LOGE("CreateIoCompletionPort failed for read event on socket %llu: %lu", cast_socket_t(socket),
+                     GetLastError());
+        return false;
+    }
+
+    // Register for write events
+    IocpEventInfo writeInfo(socket, lmshao::network::EventType::WRITE);
+    HANDLE writeResult = CreateIoCompletionPort(reinterpret_cast<HANDLE>(socket), iocpHandle_, writeInfo.Encode(), 0);
+    if (writeResult == NULL) {
+        NETWORK_LOGE("CreateIoCompletionPort failed for write event on socket %llu: %lu", cast_socket_t(socket),
                      GetLastError());
         return false;
     }
@@ -275,7 +281,7 @@ bool EventReactor::RegisterHandler(std::shared_ptr<EventHandler> handler)
     std::unique_lock<std::shared_mutex> lock(mutex_);
     handlers_.emplace(socket, handler);
 
-    NETWORK_LOGD("Handler registered successfully for socket:%llu", static_cast<unsigned long long>(socket));
+    NETWORK_LOGD("Handler registered successfully for socket:%llu", cast_socket_t(socket));
     return true;
 #else
     int fd = handler->GetHandle();
@@ -320,21 +326,21 @@ bool EventReactor::RegisterHandler(std::shared_ptr<EventHandler> handler)
 #endif
 }
 
-bool EventReactor::RemoveHandler(int fd)
+bool EventReactor::RemoveHandler(socket_t fd)
 {
 #ifdef _WIN32
-    SOCKET socket = static_cast<SOCKET>(static_cast<UINT_PTR>(fd));
-    NETWORK_LOGD("Remove handler for socket(%llu)", static_cast<unsigned long long>(socket));
+    SOCKET socket = fd;
+    NETWORK_LOGD("Remove handler for socket(%llu)", cast_socket_t(socket));
 
     std::unique_lock<std::shared_mutex> lock(mutex_);
     auto it = handlers_.find(socket);
     if (it == handlers_.end()) {
-        NETWORK_LOGW("Handler not found for socket:%llu", static_cast<unsigned long long>(socket));
+        NETWORK_LOGW("Handler not found for socket:%llu", cast_socket_t(socket));
         return false;
     }
     handlers_.erase(it);
 
-    NETWORK_LOGD("Handler removed successfully for socket:%llu", static_cast<unsigned long long>(socket));
+    NETWORK_LOGD("Handler removed successfully for socket:%llu", cast_socket_t(socket));
     return true;
 #else
     NETWORK_LOGD("Remove handler for fd(%d)", fd);
@@ -364,11 +370,11 @@ bool EventReactor::RemoveHandler(int fd)
 #endif
 }
 
-bool EventReactor::ModifyHandler(int fd, int events)
+bool EventReactor::ModifyHandler(socket_t fd, int events)
 {
 #ifdef _WIN32
-    SOCKET socket = static_cast<SOCKET>(static_cast<UINT_PTR>(fd));
-    NETWORK_LOGD("Modify handler for socket(%llu), events:0x%x", static_cast<unsigned long long>(socket), events);
+    SOCKET socket = fd;
+    NETWORK_LOGD("Modify handler for socket(%llu), events:0x%x", cast_socket_t(socket), events);
 
     if (!running_) {
         NETWORK_LOGE("Reactor has exited");
@@ -378,13 +384,13 @@ bool EventReactor::ModifyHandler(int fd, int events)
     std::unique_lock<std::shared_mutex> lock(mutex_);
     auto it = handlers_.find(socket);
     if (it == handlers_.end()) {
-        NETWORK_LOGW("Handler not found for socket:%llu during modify", static_cast<unsigned long long>(socket));
+        NETWORK_LOGW("Handler not found for socket:%llu during modify", cast_socket_t(socket));
         return false;
     }
 
     // For IOCP, we don't need to modify events like in epoll
     // The completion will be handled when the async operation completes
-    NETWORK_LOGD("Handler modified successfully for socket:%llu", static_cast<unsigned long long>(socket));
+    NETWORK_LOGD("Handler modified successfully for socket:%llu", cast_socket_t(socket));
     return true;
 #else
     NETWORK_LOGD("Modify handler for fd(%d), events:0x%x", fd, events);
@@ -431,15 +437,15 @@ bool EventReactor::ModifyHandler(int fd, int events)
 #endif
 }
 
-void EventReactor::DispatchEvent(int fd, int events)
+void EventReactor::DispatchEvent(socket_t fd, int events)
 {
 #ifdef _WIN32
     // Use safer type conversion to avoid precision loss
-    SOCKET socket = static_cast<SOCKET>(static_cast<UINT_PTR>(fd));
+    socket_t socket = static_cast<SOCKET>(static_cast<UINT_PTR>(fd));
     std::shared_lock<std::shared_mutex> lock(mutex_);
     auto it = handlers_.find(socket);
     if (it == handlers_.end()) {
-        NETWORK_LOGW("Handler not found for socket:%llu", static_cast<unsigned long long>(socket));
+        NETWORK_LOGW("Handler not found for socket:%llu", cast_socket_t(socket));
         return;
     }
 #else
@@ -457,19 +463,19 @@ void EventReactor::DispatchEvent(int fd, int events)
     try {
 #ifdef _WIN32
         // Windows: events are EventType enum values
-        if (events & static_cast<int>(EventType::READ)) {
+        if (events & static_cast<int>(lmshao::network::EventType::READ)) {
             handler->HandleRead(fd);
         }
 
-        if (events & static_cast<int>(EventType::WRITE)) {
+        if (events & static_cast<int>(lmshao::network::EventType::WRITE)) {
             handler->HandleWrite(fd);
         }
 
-        if (events & static_cast<int>(EventType::ERROR)) {
+        if (events & static_cast<int>(lmshao::network::EventType::ERROR)) {
             handler->HandleError(fd);
         }
 
-        if (events & static_cast<int>(EventType::CLOSE)) {
+        if (events & static_cast<int>(lmshao::network::EventType::CLOSE)) {
             handler->HandleClose(fd);
         }
 #else

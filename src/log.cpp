@@ -30,9 +30,12 @@ std::string Time()
         auto tt = std::chrono::system_clock::to_time_t(now);
 
         struct tm tm_buf;
+#ifdef _WIN32
+        localtime_s(&tm_buf, &tt);
+#else
 
         localtime_r(&tt, &tm_buf);
-
+#endif
         base_len =
             snprintf(cached_result, sizeof(cached_result), "%04d-%02d-%02d %02d:%02d:%02d.", tm_buf.tm_year + 1900,
                      tm_buf.tm_mon + 1, tm_buf.tm_mday, tm_buf.tm_hour, tm_buf.tm_min, tm_buf.tm_sec);
@@ -41,7 +44,6 @@ std::string Time()
     }
 
     snprintf(cached_result + base_len, 4, "%03d", (int)ms);
-
     return std::string(cached_result);
 }
 

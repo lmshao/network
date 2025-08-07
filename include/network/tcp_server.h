@@ -11,13 +11,24 @@
 #ifndef NETWORK_TCP_SERVER_H
 #define NETWORK_TCP_SERVER_H
 
+#ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#pragma comment(lib, "ws2_32.lib")
+
+#else
+#include <arpa/inet.h>
 #include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#endif
 
 #include <cstdint>
 #include <memory>
 #include <string>
 
 #include "base_server.h"
+#include "common.h"
 #include "iserver_listener.h"
 #include "session.h"
 #include "task_queue.h"
@@ -25,12 +36,12 @@
 namespace lmshao::network {
 class EventHandler;
 class TcpConnectionHandler;
+class TcpServerHandler;
 
 class TcpServer final : public BaseServer, public std::enable_shared_from_this<TcpServer> {
     friend class EventProcessor;
     friend class TcpServerHandler;
     friend class TcpConnectionHandler;
-    const int INVALID_SOCKET = -1;
 
 public:
     template <typename... Args>
@@ -49,7 +60,7 @@ public:
     bool Send(int fd, std::string host, uint16_t port, std::shared_ptr<DataBuffer> buffer) override;
     bool Send(int fd, std::string host, uint16_t port, const std::string &str) override;
 
-    int GetSocketFd() const { return socket_; }
+    socket_t GetSocketFd() const { return socket_; }
 
 protected:
     TcpServer(std::string listenIp, uint16_t listenPort) : localPort_(listenPort), localIp_(listenIp) {}
@@ -62,17 +73,19 @@ protected:
 
 private:
     uint16_t localPort_;
-    int socket_ = INVALID_SOCKET;
+
+    socket_t socket_ = INVALID_SOCKET;
+
     std::string localIp_ = "0.0.0.0";
     struct sockaddr_in serverAddr_;
 
     std::weak_ptr<IServerListener> listener_;
-    std::unordered_map<int, std::shared_ptr<Session>> sessions_;
+    std::unordered_map<socket_t, std::shared_ptr<Session>> sessions_;
     std::unique_ptr<TaskQueue> taskQueue_;
     std::unique_ptr<DataBuffer> readBuffer_;
 
     std::shared_ptr<EventHandler> serverHandler_;
-    std::unordered_map<int, std::shared_ptr<TcpConnectionHandler>> connectionHandlers_;
+    std::unordered_map<socket_t, std::shared_ptr<TcpConnectionHandler>> connectionHandlers_;
 };
 
 } // namespace lmshao::network

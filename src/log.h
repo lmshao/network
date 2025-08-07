@@ -14,29 +14,51 @@
 #include <string>
 
 namespace lmshao::network {
+
+#ifdef _WIN32
+#include <string.h>
+#include <windows.h>
+#define FILENAME_ (strrchr(__FILE__, '\\') ? strrchr(__FILE__, '\\') + 1 : __FILE__)
+#define FUNC_NAME_ __FUNCTION__
+
+struct AnsiColorInitializer {
+    AnsiColorInitializer()
+    {
+        HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+        if (hOut != INVALID_HANDLE_VALUE) {
+            DWORD dwMode = 0;
+            if (GetConsoleMode(hOut, &dwMode)) {
+                dwMode |= ENABLE_VIRTUAL_TERMINAL_PROCESSING;
+                SetConsoleMode(hOut, dwMode);
+            }
+        }
+    }
+};
+static AnsiColorInitializer ansi_init;
+
+#else // not _WIN32
+#define FILENAME_ (__builtin_strrchr(__FILE__, '/') ? __builtin_strrchr(__FILE__, '/') + 1 : __FILE__)
+#define FUNC_NAME_ __PRETTY_FUNCTION__
+#endif
+
 std::string Time();
 
+// 统一的日志实现宏
 #define NETWORK_LOG_IMPL(color_start, color_end, fmt, ...)                                                             \
     do {                                                                                                               \
-        auto timestamp = lmshao::network::Time();                                                                      \
-        printf(color_start "%s - %s:%d - %s: " fmt color_end "\n", timestamp.c_str(), FILENAME_, __LINE__,             \
-               __PRETTY_FUNCTION__, ##__VA_ARGS__);                                                                    \
+        auto timestamp = Time();                                                                                       \
+        printf(color_start "%s - %s:%d - %s: " fmt color_end "\n", timestamp.c_str(), FILENAME_, __LINE__, FUNC_NAME_, \
+               ##__VA_ARGS__);                                                                                         \
     } while (0)
 
-#define FILENAME_ (__builtin_strrchr(__FILE__, '/') ? __builtin_strrchr(__FILE__, '/') + 1 : __FILE__)
-
 #ifdef RELEASE
-
 #define NETWORK_LOGD(fmt, ...)
 #define NETWORK_LOGW(fmt, ...)
 #define NETWORK_LOGE(fmt, ...) NETWORK_LOG_IMPL("\033[0;31m", "\033[0m", fmt, ##__VA_ARGS__)
-
 #else
-
 #define NETWORK_LOGD(fmt, ...) NETWORK_LOG_IMPL("", "", fmt, ##__VA_ARGS__)
 #define NETWORK_LOGW(fmt, ...) NETWORK_LOG_IMPL("\033[0;33m", "\033[0m", fmt, ##__VA_ARGS__)
 #define NETWORK_LOGE(fmt, ...) NETWORK_LOG_IMPL("\033[0;31m", "\033[0m", fmt, ##__VA_ARGS__)
-
 #endif // RELEASE
 } // namespace lmshao::network
 #endif // NETWORK_LOG_H

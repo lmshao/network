@@ -31,6 +31,7 @@
 #include <thread>
 #include <unordered_map>
 
+#include "common.h"
 #include "singleton.h"
 
 namespace lmshao::network {
@@ -41,16 +42,34 @@ enum class EventType {
     CLOSE = 0x08
 };
 
+#ifdef _WIN32
+struct IocpEventInfo {
+    SOCKET socket;
+    EventType eventType;
+
+    IocpEventInfo(SOCKET s, EventType et) : socket(s), eventType(et) {}
+
+    ULONG_PTR Encode() const { return static_cast<ULONG_PTR>(socket) | (static_cast<ULONG_PTR>(eventType) << 56); }
+
+    static IocpEventInfo Decode(ULONG_PTR completionKey)
+    {
+        SOCKET s = static_cast<SOCKET>(completionKey & 0xFFFFFFFFFFFFFFFFULL);
+        EventType et = static_cast<EventType>((completionKey >> 56) & 0xFF);
+        return IocpEventInfo(s, et);
+    }
+};
+#endif
+
 class EventHandler {
 public:
     virtual ~EventHandler() = default;
 
-    virtual void HandleRead(int fd) = 0;
-    virtual void HandleWrite(int fd) = 0;
-    virtual void HandleError(int fd) = 0;
-    virtual void HandleClose(int fd) = 0;
+    virtual void HandleRead(socket_t fd) = 0;
+    virtual void HandleWrite(socket_t fd) = 0;
+    virtual void HandleError(socket_t fd) = 0;
+    virtual void HandleClose(socket_t fd) = 0;
 
-    virtual int GetHandle() const = 0;
+    virtual socket_t GetHandle() const = 0;
     virtual int GetEvents() const { return static_cast<int>(EventType::READ); }
 };
 
@@ -62,26 +81,25 @@ public:
     ~EventReactor();
 
     bool RegisterHandler(std::shared_ptr<EventHandler> handler);
-    bool RemoveHandler(int fd);
-    bool ModifyHandler(int fd, int events);
+    bool RemoveHandler(socket_t fd);
+    bool ModifyHandler(socket_t fd, int events);
 
     void SetThreadName(const std::string &name);
 
 private:
     void Run();
-    void DispatchEvent(int fd, int events);
+    void DispatchEvent(socket_t fd, int events);
     void WakeupEventLoop();
 
 #ifdef _WIN32
     HANDLE iocpHandle_ = INVALID_HANDLE_VALUE;
     HANDLE shutdownEvent_ = INVALID_HANDLE_VALUE;
-    std::unordered_map<SOCKET, std::shared_ptr<EventHandler>> handlers_;
 #else
     int epollFd_ = -1;
     int wakeupFd_ = -1;
-    std::unordered_map<int, std::shared_ptr<EventHandler>> handlers_;
 #endif
 
+    std::unordered_map<socket_t, std::shared_ptr<EventHandler>> handlers_;
     bool running_ = false;
 
     std::shared_mutex mutex_;

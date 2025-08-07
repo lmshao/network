@@ -10,11 +10,22 @@
 
 #include "tcp_server.h"
 
+#ifdef _WIN32
+#include <mstcpip.h>
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#pragma comment(lib, "ws2_32.lib")
+#define MSG_NOSIGNAL 0
+#define MSG_DONTWAIT 0
+typedef int ssize_t;
+#else
 #include <arpa/inet.h>
+#include <fcntl.h>
 #include <netinet/tcp.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
+#endif
 
 #include <cerrno>
 #include <queue>
@@ -26,6 +37,50 @@
 namespace lmshao::network {
 constexpr int TCP_BACKLOG = 10;
 constexpr int RECV_BUFFER_MAX_SIZE = 4096;
+
+inline bool IsWouldBlock(int error)
+{
+#ifdef _WIN32
+    return error == WSAEWOULDBLOCK;
+#else
+    return error == EAGAIN || error == EWOULDBLOCK;
+#endif
+}
+
+inline bool IsConnReset(int error)
+{
+#ifdef _WIN32
+    return error == WSAECONNRESET;
+#else
+    return error == ECONNRESET;
+#endif
+}
+
+// #endif
+
+inline bool SetNonBlocking(socket_t sock)
+{
+#ifdef _WIN32
+    u_long mode = 1;
+    int result = ioctlsocket(sock, FIONBIO, &mode);
+    if (result != 0) {
+        NETWORK_LOGE("ioctlsocket failed with error: %d", WSAGetLastError());
+        return false;
+    }
+#else
+    int flags = fcntl(sock, F_GETFL, 0);
+    if (flags == -1) {
+        NETWORK_LOGE("fcntl(F_GETFL) failed: %s", strerror(errno));
+        return false;
+    }
+    int result = fcntl(sock, F_SETFL, flags | O_NONBLOCK);
+    if (result == -1) {
+        NETWORK_LOGE("fcntl(F_SETFL) failed: %s", strerror(errno));
+        return false;
+    }
+#endif
+    return true;
+}
 
 class TcpServerHandler : public EventHandler {
 public:
@@ -136,7 +191,7 @@ private:
     {
         while (!sendQueue_.empty()) {
             auto &buf = sendQueue_.front();
-            ssize_t bytesSent = send(fd_, buf->Data(), buf->Size(), MSG_NOSIGNAL);
+            ssize_t bytesSent = send(fd_, reinterpret_cast<const char *>(buf->Data()), buf->Size(), MSG_NOSIGNAL);
             if (bytesSent > 0) {
                 if (static_cast<size_t>(bytesSent) == buf->Size()) {
                     sendQueue_.pop();
@@ -170,37 +225,96 @@ private:
 
 TcpServer::~TcpServer()
 {
-    NETWORK_LOGD("fd:%d", socket_);
+    NETWORK_LOGD("fd:%llu", static_cast<uint64_t>(socket_));
     Stop();
 }
 
 bool TcpServer::Init()
 {
-    socket_ = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
-    if (socket_ == INVALID_SOCKET) {
-        NETWORK_LOGD("socket error: %s", strerror(errno));
+#ifdef _WIN32
+    WSADATA wsaData;
+    int result = WSAStartup(MAKEWORD(2, 2), &wsaData);
+    if (result != 0) {
+        NETWORK_LOGE("WSAStartup failed: %d", result);
         return false;
     }
-    NETWORK_LOGD("init ip: %s, port: %d fd:%d", localIp_.c_str(), localPort_, socket_);
 
+    socket_ = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (socket_ == INVALID_SOCKET) {
+        NETWORK_LOGE("socket error: %d", WSAGetLastError());
+        WSACleanup();
+        return false;
+    }
+
+    SetNonBlocking(socket_);
+#else
+    socket_ = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
+    if (socket_ == -1) {
+        NETWORK_LOGE("socket error: %s", strerror(errno));
+        return false;
+    }
+#endif
+
+    NETWORK_LOGD("init ip: %s, port: %d fd:%llu", localIp_.c_str(), localPort_, static_cast<uint64_t>(socket_));
+
+#ifdef _WIN32
+    char optval = 1;
+    if (setsockopt(socket_, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval)) == SOCKET_ERROR) {
+        NETWORK_LOGE("setsockopt error: %d", WSAGetLastError());
+        closesocket(socket_);
+        WSACleanup();
+        return false;
+    }
+#else
     int optval = 1;
     if (setsockopt(socket_, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval)) < 0) {
-        NETWORK_LOGD("setsockopt error: %s", strerror(errno));
+        NETWORK_LOGE("setsockopt error: %s", strerror(errno));
+        close(socket_);
         return false;
     }
+#endif
 
     memset(&serverAddr_, 0, sizeof(serverAddr_));
     serverAddr_.sin_family = AF_INET;
     serverAddr_.sin_port = htons(localPort_);
-    inet_aton(localIp_.c_str(), &serverAddr_.sin_addr);
+
+#ifdef _WIN32
+    serverAddr_.sin_addr.s_addr = inet_addr(localIp_.c_str());
+    if (serverAddr_.sin_addr.s_addr == INADDR_NONE) {
+        NETWORK_LOGE("invalid IP address: %s", localIp_.c_str());
+        closesocket(socket_);
+        WSACleanup();
+        return false;
+    }
+#else
+    if (inet_aton(localIp_.c_str(), &serverAddr_.sin_addr) == 0) {
+        NETWORK_LOGE("invalid IP address: %s", localIp_.c_str());
+        close(socket_);
+        return false;
+    }
+#endif
 
     if (bind(socket_, (struct sockaddr *)&serverAddr_, sizeof(serverAddr_)) < 0) {
+#ifdef _WIN32
+        NETWORK_LOGE("bind error: %d", WSAGetLastError());
+        closesocket(socket_);
+        WSACleanup();
+#else
         NETWORK_LOGE("bind error: %s", strerror(errno));
+        close(socket_);
+#endif
         return false;
     }
 
     if (listen(socket_, TCP_BACKLOG) < 0) {
+#ifdef _WIN32
+        NETWORK_LOGE("listen error: %d", WSAGetLastError());
+        closesocket(socket_);
+        WSACleanup();
+#else
         NETWORK_LOGE("listen error: %s", strerror(errno));
+        close(socket_);
+#endif
         return false;
     }
 
@@ -211,7 +325,7 @@ bool TcpServer::Init()
 bool TcpServer::Start()
 {
     if (socket_ == INVALID_SOCKET) {
-        NETWORK_LOGD("socket not initialized");
+        NETWORK_LOGE("socket not initialized");
         return false;
     }
 
@@ -231,24 +345,31 @@ bool TcpServer::Stop()
 {
     auto reactor = EventReactor::GetInstance();
 
-    std::vector<int> clientFds;
+    std::vector<socket_t> clientFds;
     for (const auto &pair : sessions_) {
         clientFds.push_back(pair.first);
     }
 
-    for (int clientFd : clientFds) {
+    for (socket_t clientFd : clientFds) {
         NETWORK_LOGD("close client fd: %d", clientFd);
         reactor->RemoveHandler(clientFd);
+#ifdef _WIN32
+        closesocket(clientFd);
+#else
         close(clientFd);
-
+#endif
         connectionHandlers_.erase(clientFd);
     }
     sessions_.clear();
 
     if (socket_ != INVALID_SOCKET && serverHandler_) {
-        NETWORK_LOGD("close server fd: %d", socket_);
-        reactor->RemoveHandler(socket_);
-        close(socket_);
+        NETWORK_LOGD("close server fd: %llu", static_cast<uint64_t>(socket_));
+        reactor->RemoveHandler(static_cast<int>(socket_));
+
+#ifdef _WIN32
+        closesocket(socket_);
+        WSACleanup();
+#endif
         socket_ = INVALID_SOCKET;
         serverHandler_.reset();
     }
@@ -312,31 +433,49 @@ void TcpServer::HandleAccept(int fd)
     NETWORK_LOGD("enter");
     struct sockaddr_in clientAddr = {};
     socklen_t addrLen = sizeof(struct sockaddr_in);
+
+#ifdef _WIN32
+    SOCKET clientSocket = accept(static_cast<SOCKET>(fd), (struct sockaddr *)&clientAddr, (int *)&addrLen);
+    if (clientSocket == INVALID_SOCKET) {
+        int error = WSAGetLastError();
+        NETWORK_LOGE("accept error: %d", error);
+        return;
+    }
+
+    if (!SetNonBlocking(clientSocket)) {
+        closesocket(clientSocket);
+        return;
+    }
+
+    int clientFd = static_cast<int>(clientSocket);
+#else
     int clientSocket = accept4(fd, (struct sockaddr *)&clientAddr, &addrLen, SOCK_NONBLOCK);
     if (clientSocket < 0) {
         NETWORK_LOGD("accept error: %s", strerror(errno));
         return;
     }
+    int clientFd = clientSocket;
+#endif
 
-    auto connectionHandler = std::make_shared<TcpConnectionHandler>(clientSocket, shared_from_this());
+    auto connectionHandler = std::make_shared<TcpConnectionHandler>(clientFd, shared_from_this());
     if (!EventReactor::GetInstance()->RegisterHandler(connectionHandler)) {
-        NETWORK_LOGE("Failed to register connection handler for fd: %d", clientSocket);
-        close(clientSocket);
+        NETWORK_LOGE("Failed to register connection handler for fd: %d", clientFd);
+        CloseSocket(clientFd);
         return;
     }
 
-    connectionHandlers_[clientSocket] = connectionHandler;
+    connectionHandlers_[clientFd] = connectionHandler;
 
-    // EnableKeepAlive(clientSocket);
+    // EnableKeepAlive(clientFd);
 
     std::string host = inet_ntoa(clientAddr.sin_addr);
     uint16_t port = ntohs(clientAddr.sin_port);
 
-    NETWORK_LOGD("New client connections client[%d] %s:%d\n", clientSocket, inet_ntoa(clientAddr.sin_addr),
+    NETWORK_LOGD("New client connections client[%d] %s:%d\n", clientFd, inet_ntoa(clientAddr.sin_addr),
                  ntohs(clientAddr.sin_port));
 
-    auto session = std::make_shared<SessionImpl>(clientSocket, host, port, shared_from_this());
-    sessions_.emplace(clientSocket, session);
+    auto session = std::make_shared<SessionImpl>(clientFd, host, port, shared_from_this());
+    sessions_.emplace(clientFd, session);
 
     if (!listener_.expired()) {
         auto listenerWeak = listener_;
@@ -366,7 +505,7 @@ void TcpServer::HandleReceive(int fd)
     }
 
     while (true) {
-        ssize_t nbytes = recv(fd, readBuffer_->Data(), readBuffer_->Capacity(), MSG_DONTWAIT);
+        ssize_t nbytes = recv(fd, reinterpret_cast<char *>(readBuffer_->Data()), readBuffer_->Capacity(), MSG_DONTWAIT);
 
         if (nbytes > 0) {
             if (nbytes > RECV_BUFFER_MAX_SIZE) {
@@ -428,10 +567,11 @@ void TcpServer::EnableKeepAlive(int fd)
     constexpr int TCP_KEEP_IDLE = 3;     // Start probing after 3 seconds of no data interaction
     constexpr int TCP_KEEP_INTERVAL = 1; // Probe interval 1 second
     constexpr int TCP_KEEP_COUNT = 2;    // Probe 2 times
-    setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &keepAlive, sizeof(keepAlive));
-    setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE, &TCP_KEEP_IDLE, sizeof(TCP_KEEP_IDLE));
-    setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &TCP_KEEP_INTERVAL, sizeof(TCP_KEEP_INTERVAL));
-    setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, &TCP_KEEP_COUNT, sizeof(TCP_KEEP_COUNT));
+    setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, reinterpret_cast<const char *>(&keepAlive), sizeof(keepAlive));
+    setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE, reinterpret_cast<const char *>(&TCP_KEEP_IDLE), sizeof(TCP_KEEP_IDLE));
+    setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, reinterpret_cast<const char *>(&TCP_KEEP_INTERVAL),
+               sizeof(TCP_KEEP_INTERVAL));
+    setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, reinterpret_cast<const char *>(&TCP_KEEP_COUNT), sizeof(TCP_KEEP_COUNT));
 }
 
 void TcpServer::HandleConnectionClose(int fd, bool isError, const std::string &reason)
@@ -446,7 +586,7 @@ void TcpServer::HandleConnectionClose(int fd, bool isError, const std::string &r
 
     EventReactor::GetInstance()->RemoveHandler(fd);
 
-    close(fd);
+    CloseSocket(fd);
 
     std::shared_ptr<Session> session = sessionIt->second;
     sessions_.erase(sessionIt);
