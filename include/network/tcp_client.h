@@ -11,7 +11,13 @@
 #ifndef NETWORK_TCP_CLIENT_H
 #define NETWORK_TCP_CLIENT_H
 
+
+#ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#else
 #include <netinet/in.h>
+#endif
 
 #include <cstdint>
 #include <memory>
@@ -29,7 +35,6 @@ class EventHandler;
 
 class TcpClient final : public std::enable_shared_from_this<TcpClient> {
     friend class TcpClientHandler;
-    const int INVALID_SOCKET = -1;
 
 public:
     template <typename... Args>
@@ -50,13 +55,13 @@ public:
 
     void Close();
 
-    int GetSocketFd() const { return socket_; }
+    socket_t GetSocketFd() const { return socket_; }
 
 protected:
     TcpClient(std::string remoteIp, uint16_t remotePort, std::string localIp = "", uint16_t localPort = 0);
 
-    void HandleReceive(int fd);
-    void HandleConnectionClose(int fd, bool isError, const std::string &reason);
+    void HandleReceive(socket_t fd);
+    void HandleConnectionClose(socket_t fd, bool isError, const std::string &reason);
     void ReInit();
 
 private:
@@ -66,7 +71,7 @@ private:
     std::string localIp_;
     uint16_t localPort_;
 
-    int socket_ = INVALID_SOCKET;
+    socket_t socket_ = INVALID_SOCKET;
     struct sockaddr_in serverAddr_;
 
     std::weak_ptr<IClientListener> listener_;

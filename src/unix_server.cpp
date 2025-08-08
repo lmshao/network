@@ -28,16 +28,16 @@ constexpr int RECV_BUFFER_MAX_SIZE = 4096;
 class UnixServerHandler : public EventHandler {
 public:
     explicit UnixServerHandler(std::weak_ptr<UnixServer> server) : server_(server) {}
-    void HandleRead(int fd) override
+    void HandleRead(socket_t fd) override
     {
         if (auto s = server_.lock())
             s->HandleAccept(fd);
     }
     void HandleWrite(int) override {}
 
-    void HandleError(int fd) override { NETWORK_LOGE("UNIX server socket error on fd: %d", fd); }
+    void HandleError(socket_t fd) override { NETWORK_LOGE("UNIX server socket error on fd: %d", fd); }
 
-    void HandleClose(int fd) override { NETWORK_LOGD("UNIX server socket close on fd: %d", fd); }
+    void HandleClose(socket_t fd) override { NETWORK_LOGD("UNIX server socket close on fd: %d", fd); }
 
     int GetHandle() const override
     {
@@ -59,27 +59,27 @@ private:
 
 class UnixConnectionHandler : public EventHandler {
 public:
-    UnixConnectionHandler(int fd, std::weak_ptr<UnixServer> server)
+    UnixConnectionHandler(socket_t fd, std::weak_ptr<UnixServer> server)
         : fd_(fd), server_(server), writeEventsEnabled_(false)
     {
     }
 
-    void HandleRead(int fd) override
+    void HandleRead(socket_t fd) override
     {
         if (auto s = server_.lock())
             s->HandleReceive(fd);
     }
 
-    void HandleWrite(int fd) override { ProcessSendQueue(); }
+    void HandleWrite(socket_t fd) override { ProcessSendQueue(); }
 
-    void HandleError(int fd) override
+    void HandleError(socket_t fd) override
     {
         NETWORK_LOGE("UNIX connection error on fd: %d", fd);
         if (auto s = server_.lock())
             s->HandleConnectionClose(fd, true, "Connection error");
     }
 
-    void HandleClose(int fd) override
+    void HandleClose(socket_t fd) override
     {
         NETWORK_LOGD("UNIX connection close on fd: %d", fd);
         if (auto s = server_.lock())
@@ -149,7 +149,7 @@ private:
             DisableWriteEvents();
         }
     }
-    int fd_;
+    socket_t fd_;
     std::weak_ptr<UnixServer> server_;
     std::queue<std::shared_ptr<DataBuffer>> sendQueue_;
     bool writeEventsEnabled_;
@@ -224,7 +224,7 @@ bool UnixServer::Stop()
     return true;
 }
 
-bool UnixServer::Send(int fd, std::string host, uint16_t port, const void *data, size_t size)
+bool UnixServer::Send(socket_t fd, std::string host, uint16_t port, const void *data, size_t size)
 {
     if (!data || size == 0) {
         return false;
@@ -234,7 +234,7 @@ bool UnixServer::Send(int fd, std::string host, uint16_t port, const void *data,
     return Send(fd, host, port, buf);
 }
 
-bool UnixServer::Send(int fd, std::string host, uint16_t port, std::shared_ptr<DataBuffer> buffer)
+bool UnixServer::Send(socket_t fd, std::string host, uint16_t port, std::shared_ptr<DataBuffer> buffer)
 {
     (void)host;
     (void)port;
@@ -253,7 +253,7 @@ bool UnixServer::Send(int fd, std::string host, uint16_t port, std::shared_ptr<D
     return false;
 }
 
-bool UnixServer::Send(int fd, std::string host, uint16_t port, const std::string &str)
+bool UnixServer::Send(socket_t fd, std::string host, uint16_t port, const std::string &str)
 {
     if (str.empty()) {
         return false;
@@ -268,7 +268,7 @@ void UnixServer::Close()
     Stop();
 }
 
-void UnixServer::HandleAccept(int fd)
+void UnixServer::HandleAccept(socket_t fd)
 {
     struct sockaddr_un clientAddr = {};
     socklen_t addrLen = sizeof(clientAddr);
@@ -296,7 +296,7 @@ void UnixServer::HandleAccept(int fd)
     }
 }
 
-void UnixServer::HandleReceive(int fd)
+void UnixServer::HandleReceive(socket_t fd)
 {
     if (readBuffer_ == nullptr) {
         readBuffer_ = DataBuffer::PoolAlloc(RECV_BUFFER_MAX_SIZE);
@@ -337,7 +337,7 @@ void UnixServer::HandleReceive(int fd)
     }
 }
 
-void UnixServer::HandleConnectionClose(int fd, bool isError, const std::string &reason)
+void UnixServer::HandleConnectionClose(socket_t fd, bool isError, const std::string &reason)
 {
     NETWORK_LOGD("Closing UNIX connection fd: %d, reason: %s, isError: %s", fd, reason.c_str(),
                  isError ? "true" : "false");

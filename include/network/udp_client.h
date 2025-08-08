@@ -11,7 +11,12 @@
 #ifndef NETWORK_UDP_CLIENT_H
 #define NETWORK_UDP_CLIENT_H
 
+#ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#else
 #include <netinet/in.h>
+#endif
 
 #include <cstdint>
 #include <memory>
@@ -20,6 +25,7 @@
 #include "data_buffer.h"
 #include "iclient_listener.h"
 #include "task_queue.h"
+#include "common.h"
 
 namespace lmshao::network {
 
@@ -27,7 +33,6 @@ class EventHandler;
 
 class UdpClient final : public std::enable_shared_from_this<UdpClient> {
     friend class UdpClientHandler;
-    const int INVALID_SOCKET = -1;
 
 public:
     template <typename... Args>
@@ -47,13 +52,13 @@ public:
 
     void Close();
 
-    int GetSocketFd() const { return socket_; }
+    socket_t GetSocketFd() const { return socket_; }
 
 protected:
     UdpClient(std::string remoteIp, uint16_t remotePort, std::string localIp = "", uint16_t localPort = 0);
 
-    void HandleReceive(int fd);
-    void HandleConnectionClose(int fd, bool isError, const std::string &reason);
+    void HandleReceive(socket_t fd);
+    void HandleConnectionClose(socket_t fd, bool isError, const std::string &reason);
 
 private:
     std::string remoteIp_;
@@ -62,7 +67,7 @@ private:
     std::string localIp_;
     uint16_t localPort_;
 
-    int socket_ = INVALID_SOCKET;
+    socket_t socket_ = INVALID_SOCKET;
     struct sockaddr_in serverAddr_;
 
     std::weak_ptr<IClientListener> listener_;

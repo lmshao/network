@@ -20,26 +20,16 @@ namespace lmshao::network {
 #include <windows.h>
 #define FILENAME_ (strrchr(__FILE__, '\\') ? strrchr(__FILE__, '\\') + 1 : __FILE__)
 #define FUNC_NAME_ __FUNCTION__
+#define SOCKET_FMT "%llu"
 
-struct AnsiColorInitializer {
-    AnsiColorInitializer()
-    {
-        HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
-        if (hOut != INVALID_HANDLE_VALUE) {
-            DWORD dwMode = 0;
-            if (GetConsoleMode(hOut, &dwMode)) {
-                dwMode |= ENABLE_VIRTUAL_TERMINAL_PROCESSING;
-                SetConsoleMode(hOut, dwMode);
-            }
-        }
-    }
-};
-static AnsiColorInitializer ansi_init;
-
+#define NETWORK_LOG_IMPL(color_start, color_end, fmt, ...) \
+    do { \
+    } while (0)
 #else // not _WIN32
+
 #define FILENAME_ (__builtin_strrchr(__FILE__, '/') ? __builtin_strrchr(__FILE__, '/') + 1 : __FILE__)
 #define FUNC_NAME_ __PRETTY_FUNCTION__
-#endif
+#define SOCKET_FMT "%d"
 
 std::string Time();
 
@@ -50,6 +40,7 @@ std::string Time();
         printf(color_start "%s - %s:%d - %s: " fmt color_end "\n", timestamp.c_str(), FILENAME_, __LINE__, FUNC_NAME_, \
                ##__VA_ARGS__);                                                                                         \
     } while (0)
+#endif // _WIN32
 
 #ifdef RELEASE
 #define NETWORK_LOGD(fmt, ...)

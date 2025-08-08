@@ -11,7 +11,12 @@
 #ifndef NETWORK_UDP_SERVER_H
 #define NETWORK_UDP_SERVER_H
 
+#ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#else
 #include <netinet/in.h>
+#endif
 
 #include <cstdint>
 #include <memory>
@@ -27,7 +32,6 @@ class EventHandler;
 
 class UdpServer final : public BaseServer, public std::enable_shared_from_this<UdpServer> {
     friend class UdpServerHandler;
-    const int INVALID_SOCKET = -1;
 
 public:
     template <typename... Args>
@@ -42,11 +46,11 @@ public:
     void SetListener(std::shared_ptr<IServerListener> listener) override { listener_ = listener; }
     bool Start() override;
     bool Stop() override;
-    bool Send(int fd, std::string host, uint16_t port, const void *data, size_t size) override;
-    bool Send(int fd, std::string host, uint16_t port, std::shared_ptr<DataBuffer> buffer) override;
-    bool Send(int fd, std::string host, uint16_t port, const std::string &str) override;
+    bool Send(socket_t fd, std::string host, uint16_t port, const void *data, size_t size) override;
+    bool Send(socket_t fd, std::string host, uint16_t port, std::shared_ptr<DataBuffer> buffer) override;
+    bool Send(socket_t fd, std::string host, uint16_t port, const std::string &str) override;
 
-    int GetSocketFd() const { return socket_; }
+    socket_t GetSocketFd() const { return socket_; }
 
     static uint16_t GetIdlePort();
     static uint16_t GetIdlePortPair();
@@ -55,13 +59,13 @@ private:
     UdpServer(std::string listenIp, uint16_t listenPort) : localIp_(listenIp), localPort_(listenPort) {}
     explicit UdpServer(uint16_t listenPort) : localPort_(listenPort) {}
 
-    void HandleReceive(int fd);
+    void HandleReceive(socket_t fd);
 
 private:
     std::string localIp_ = "0.0.0.0";
     uint16_t localPort_;
 
-    int socket_ = INVALID_SOCKET;
+    socket_t socket_ = INVALID_SOCKET;
     struct sockaddr_in serverAddr_;
 
     std::weak_ptr<IServerListener> listener_;

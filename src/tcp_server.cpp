@@ -17,7 +17,6 @@
 #pragma comment(lib, "ws2_32.lib")
 #define MSG_NOSIGNAL 0
 #define MSG_DONTWAIT 0
-typedef int ssize_t;
 #else
 #include <arpa/inet.h>
 #include <fcntl.h>
@@ -37,26 +36,6 @@ typedef int ssize_t;
 namespace lmshao::network {
 constexpr int TCP_BACKLOG = 10;
 constexpr int RECV_BUFFER_MAX_SIZE = 4096;
-
-inline bool IsWouldBlock(int error)
-{
-#ifdef _WIN32
-    return error == WSAEWOULDBLOCK;
-#else
-    return error == EAGAIN || error == EWOULDBLOCK;
-#endif
-}
-
-inline bool IsConnReset(int error)
-{
-#ifdef _WIN32
-    return error == WSAECONNRESET;
-#else
-    return error == ECONNRESET;
-#endif
-}
-
-// #endif
 
 inline bool SetNonBlocking(socket_t sock)
 {
@@ -86,20 +65,20 @@ class TcpServerHandler : public EventHandler {
 public:
     explicit TcpServerHandler(std::weak_ptr<TcpServer> server) : server_(server) {}
 
-    void HandleRead(int fd) override
+    void HandleRead(socket_t fd) override
     {
         if (auto server = server_.lock()) {
             server->HandleAccept(fd);
         }
     }
 
-    void HandleWrite(int fd) override {}
+    void HandleWrite(socket_t fd) override {}
 
-    void HandleError(int fd) override { NETWORK_LOGE("Server socket error on fd: %d", fd); }
+    void HandleError(socket_t fd) override { NETWORK_LOGE("Server socket error on fd: " SOCKET_FMT, fd); }
 
-    void HandleClose(int fd) override { NETWORK_LOGD("Server socket close on fd: %d", fd); }
+    void HandleClose(socket_t fd) override { NETWORK_LOGD("Server socket close on fd: " SOCKET_FMT, fd); }
 
-    int GetHandle() const override
+    socket_t GetHandle() const override
     {
         if (auto server = server_.lock()) {
             return server->GetSocketFd();
@@ -119,20 +98,20 @@ private:
 
 class TcpConnectionHandler : public EventHandler {
 public:
-    TcpConnectionHandler(int fd, std::weak_ptr<TcpServer> server) : fd_(fd), server_(server), writeEventsEnabled_(false)
+    TcpConnectionHandler(socket_t fd, std::weak_ptr<TcpServer> server) : fd_(fd), server_(server), writeEventsEnabled_(false)
     {
     }
 
-    void HandleRead(int fd) override
+    void HandleRead(socket_t fd) override
     {
         if (auto server = server_.lock()) {
             server->HandleReceive(fd);
         }
     }
 
-    void HandleWrite(int fd) override { ProcessSendQueue(); }
+    void HandleWrite(socket_t fd) override { ProcessSendQueue(); }
 
-    void HandleError(int fd) override
+    void HandleError(socket_t fd) override
     {
         NETWORK_LOGE("Connection error on fd: %d", fd);
         if (auto server = server_.lock()) {
@@ -140,7 +119,7 @@ public:
         }
     }
 
-    void HandleClose(int fd) override
+    void HandleClose(socket_t fd) override
     {
         NETWORK_LOGD("Connection close on fd: %d", fd);
         if (auto server = server_.lock()) {
@@ -148,7 +127,7 @@ public:
         }
     }
 
-    int GetHandle() const override { return fd_; }
+    socket_t GetHandle() const override { return fd_; }
 
     int GetEvents() const override
     {
@@ -217,7 +196,7 @@ private:
     }
 
 private:
-    int fd_;
+    socket_t fd_;
     std::weak_ptr<TcpServer> server_;
     std::queue<std::shared_ptr<DataBuffer>> sendQueue_;
     bool writeEventsEnabled_;
@@ -351,7 +330,7 @@ bool TcpServer::Stop()
     }
 
     for (socket_t clientFd : clientFds) {
-        NETWORK_LOGD("close client fd: %d", clientFd);
+        NETWORK_LOGD("close client fd: " SOCKET_FMT, clientFd);
         reactor->RemoveHandler(clientFd);
 #ifdef _WIN32
         closesocket(clientFd);
@@ -383,7 +362,7 @@ bool TcpServer::Stop()
     return true;
 }
 
-bool TcpServer::Send(int fd, std::string host, uint16_t port, const void *data, size_t size)
+bool TcpServer::Send(socket_t fd, std::string host, uint16_t port, const void *data, size_t size)
 {
     if (!data || size == 0) {
         NETWORK_LOGD("invalid data or size");
@@ -394,7 +373,7 @@ bool TcpServer::Send(int fd, std::string host, uint16_t port, const void *data, 
     return Send(fd, host, port, buf);
 }
 
-bool TcpServer::Send(int fd, std::string host, uint16_t port, std::shared_ptr<DataBuffer> buffer)
+bool TcpServer::Send(socket_t fd, std::string host, uint16_t port, std::shared_ptr<DataBuffer> buffer)
 {
     if (!buffer || buffer->Size() == 0) {
         return false;
@@ -417,7 +396,7 @@ bool TcpServer::Send(int fd, std::string host, uint16_t port, std::shared_ptr<Da
     return false;
 }
 
-bool TcpServer::Send(int fd, std::string host, uint16_t port, const std::string &str)
+bool TcpServer::Send(socket_t fd, std::string host, uint16_t port, const std::string &str)
 {
     if (str.empty()) {
         NETWORK_LOGD("invalid string data");
@@ -428,7 +407,7 @@ bool TcpServer::Send(int fd, std::string host, uint16_t port, const std::string 
     return Send(fd, host, port, buf);
 }
 
-void TcpServer::HandleAccept(int fd)
+void TcpServer::HandleAccept(socket_t fd)
 {
     NETWORK_LOGD("enter");
     struct sockaddr_in clientAddr = {};
@@ -497,7 +476,7 @@ void TcpServer::HandleAccept(int fd)
     }
 }
 
-void TcpServer::HandleReceive(int fd)
+void TcpServer::HandleReceive(socket_t fd)
 {
     NETWORK_LOGD("fd: %d", fd);
     if (readBuffer_ == nullptr) {
@@ -561,7 +540,7 @@ void TcpServer::HandleReceive(int fd)
     }
 }
 
-void TcpServer::EnableKeepAlive(int fd)
+void TcpServer::EnableKeepAlive(socket_t fd)
 {
     int keepAlive = 1;
     constexpr int TCP_KEEP_IDLE = 3;     // Start probing after 3 seconds of no data interaction
@@ -574,7 +553,7 @@ void TcpServer::EnableKeepAlive(int fd)
     setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, reinterpret_cast<const char *>(&TCP_KEEP_COUNT), sizeof(TCP_KEEP_COUNT));
 }
 
-void TcpServer::HandleConnectionClose(int fd, bool isError, const std::string &reason)
+void TcpServer::HandleConnectionClose(socket_t fd, bool isError, const std::string &reason)
 {
     NETWORK_LOGD("Closing connection fd: %d, reason: %s, isError: %s", fd, reason.c_str(), isError ? "true" : "false");
 
@@ -586,7 +565,7 @@ void TcpServer::HandleConnectionClose(int fd, bool isError, const std::string &r
 
     EventReactor::GetInstance()->RemoveHandler(fd);
 
-    CloseSocket(fd);
+    close(fd);
 
     std::shared_ptr<Session> session = sessionIt->second;
     sessions_.erase(sessionIt);

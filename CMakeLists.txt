@@ -4,7 +4,14 @@ set(CMAKE_CXX_STANDARD 17)
 
 include_directories(${PROJECT_SOURCE_DIR}/include/network)
 
+# Collect source files
 file(GLOB_RECURSE SOURCES "src/*.cpp")
+
+# Remove Unix-specific files on Windows
+if(WIN32)
+    list(FILTER SOURCES EXCLUDE REGEX ".*unix_.*\\.cpp$")
+    message(STATUS "Excluding Unix-specific files on Windows platform")
+endif()
 
 # Set default build type to Release if not specified
 if(NOT CMAKE_BUILD_TYPE)
@@ -34,9 +41,15 @@ message(STATUS "C++ flags for ${CMAKE_BUILD_TYPE}: ${CMAKE_CXX_FLAGS_${CMAKE_BUI
 
 add_library(${PROJECT_NAME} STATIC ${SOURCES})
 
-# Find and link pthread library
-find_package(Threads REQUIRED)
-target_link_libraries(${PROJECT_NAME} Threads::Threads)
+# Find and link thread library (different approach for Windows vs Unix)
+if(WIN32)
+    # Windows uses built-in threading support
+    target_compile_definitions(${PROJECT_NAME} PRIVATE _WIN32_WINNT=0x0601)
+else()
+    # Unix-like systems need pthread
+    find_package(Threads REQUIRED)
+    target_link_libraries(${PROJECT_NAME} Threads::Threads)
+endif()
 
 # Add examples subdirectory
 option(BUILD_EXAMPLES "Build examples" ON)

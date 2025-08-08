@@ -17,21 +17,25 @@ namespace lmshao::network {
 
 #include <windows.h>
 
-// typedefs for cross-platform compatibility
-typedef DWORD pid_t;
-typedef SOCKET socket_t;
-typedef int socklen_t;
+typedef DWORD      pid_t;
+typedef SOCKET     socket_t;
+typedef int        socklen_t;
+typedef int        ssize_t;
 
-#define cast_socket_t(s) (s)
+constexpr int MSG_DONTWAIT = 0;
 
-#else
+inline int close(SOCKET s) {
+    return closesocket(s);
+}
+
+#else // !_WIN32
 
 typedef int socket_t;
 
 constexpr int INVALID_SOCKET = -1;
-#define cast_socket_t(s) static_cast<unsigned long long>(s)
 
-#endif
+#endif // _WIN32
 
 } // namespace lmshao::network
+
 #endif // NETWORK_COMMON_H

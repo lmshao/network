@@ -10,11 +10,18 @@
 
 #include "udp_server.h"
 
+#ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#pragma comment(lib, "ws2_32.lib")
+#else
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <cerrno>
+#endif
 
 #include <cerrno>
 
@@ -31,18 +38,18 @@ class UdpServerHandler : public EventHandler {
 public:
     explicit UdpServerHandler(std::weak_ptr<UdpServer> server) : server_(server) {}
 
-    void HandleRead(int fd) override
+    void HandleRead(socket_t fd) override
     {
         if (auto server = server_.lock()) {
             server->HandleReceive(fd);
         }
     }
 
-    void HandleWrite(int fd) override {}
+    void HandleWrite(socket_t fd) override {}
 
-    void HandleError(int fd) override { NETWORK_LOGE("UDP server socket error on fd: %d", fd); }
+    void HandleError(socket_t fd) override { NETWORK_LOGE("UDP server socket error on fd: %d", fd); }
 
-    void HandleClose(int fd) override { NETWORK_LOGD("UDP server socket close on fd: %d", fd); }
+    void HandleClose(socket_t fd) override { NETWORK_LOGD("UDP server socket close on fd: %d", fd); }
 
     int GetHandle() const override
     {
@@ -70,37 +77,76 @@ UdpServer::~UdpServer()
 
 bool UdpServer::Init()
 {
+#ifdef _WIN32
+    socket_ = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (socket_ == INVALID_SOCKET) {
+        NETWORK_LOGE("socket error: %d", WSAGetLastError());
+        return false;
+    }
+    u_long mode = 1;
+    if (ioctlsocket(socket_, FIONBIO, &mode) != 0) {
+        NETWORK_LOGE("ioctlsocket FIONBIO error: %d", WSAGetLastError());
+        closesocket(socket_);
+        socket_ = INVALID_SOCKET;
+        return false;
+    }
+#else
     socket_ = socket(AF_INET, SOCK_DGRAM | SOCK_NONBLOCK, 0);
     if (socket_ == INVALID_SOCKET) {
         NETWORK_LOGE("socket error: %s", strerror(errno));
         return false;
     }
-    NETWORK_LOGD("fd:%d", socket_);
+#endif
+    NETWORK_LOGD("fd:" SOCKET_FMT, socket_);
 
     int optval = 1;
-    if (setsockopt(socket_, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval)) < 0) {
-        NETWORK_LOGE("setsockopt error: %s", strerror(errno));
+#ifdef _WIN32
+    if (setsockopt(socket_, SOL_SOCKET, SO_REUSEADDR, (const char*)&optval, sizeof(optval)) < 0) {
+        NETWORK_LOGE("setsockopt error: %d", WSAGetLastError());
+        closesocket(socket_);
+        socket_ = INVALID_SOCKET;
         return false;
     }
-
-    // int bufferSize = 819200;
-    // if (setsockopt(socket_, SOL_SOCKET, SO_RCVBUF, &bufferSize, sizeof(bufferSize)) < 0) {
-    //     NETWORK_LOGE("setsockopt error: %s", strerror(errno));
-    //     return false;
-    // }
+#else
+    if (setsockopt(socket_, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval)) < 0) {
+        NETWORK_LOGE("setsockopt error: %s", strerror(errno));
+        close(socket_);
+        socket_ = INVALID_SOCKET;
+        return false;
+    }
+#endif
 
     memset(&serverAddr_, 0, sizeof(serverAddr_));
     serverAddr_.sin_family = AF_INET;
     serverAddr_.sin_port = htons(localPort_);
-    inet_aton(localIp_.c_str(), &serverAddr_.sin_addr);
-
-    if (bind(socket_, (struct sockaddr *)&serverAddr_, sizeof(serverAddr_)) < 0) {
-        NETWORK_LOGE("bind error: %s", strerror(errno));
+#ifdef _WIN32
+    if (inet_pton(AF_INET, localIp_.c_str(), &serverAddr_.sin_addr) != 1) {
+        NETWORK_LOGE("inet_pton localIp error");
+        closesocket(socket_);
+        socket_ = INVALID_SOCKET;
         return false;
     }
+#else
+    inet_aton(localIp_.c_str(), &serverAddr_.sin_addr);
+#endif
+
+#ifdef _WIN32
+    if (bind(socket_, (struct sockaddr *)&serverAddr_, (int)sizeof(serverAddr_)) < 0) {
+        NETWORK_LOGE("bind error: %d", WSAGetLastError());
+        closesocket(socket_);
+        socket_ = INVALID_SOCKET;
+        return false;
+    }
+#else
+    if (bind(socket_, (struct sockaddr *)&serverAddr_, sizeof(serverAddr_)) < 0) {
+        NETWORK_LOGE("bind error: %s", strerror(errno));
+        close(socket_);
+        socket_ = INVALID_SOCKET;
+        return false;
+    }
+#endif
 
     taskQueue_ = std::make_unique<TaskQueue>("UdpServerCb");
-
     return true;
 }
 
@@ -141,7 +187,7 @@ bool UdpServer::Stop()
     return true;
 }
 
-bool UdpServer::Send(int fd, std::string host, uint16_t port, const void *data, size_t size)
+bool UdpServer::Send(socket_t fd, std::string host, uint16_t port, const void *data, size_t size)
 {
     if (socket_ == INVALID_SOCKET) {
         NETWORK_LOGE("socket not initialized");
@@ -149,31 +195,43 @@ bool UdpServer::Send(int fd, std::string host, uint16_t port, const void *data, 
     }
 
     struct sockaddr_in remoteAddr;
+    memset(&remoteAddr, 0, sizeof(remoteAddr));
     remoteAddr.sin_family = AF_INET;
     remoteAddr.sin_port = htons(port);
+#ifdef _WIN32
+    if (inet_pton(AF_INET, host.c_str(), &remoteAddr.sin_addr) != 1) {
+        NETWORK_LOGE("inet_pton remote host error");
+        return false;
+    }
+    int nbytes = sendto(socket_, (const char*)data, (int)size, 0, (struct sockaddr *)&remoteAddr, (int)sizeof(remoteAddr));
+    if (nbytes != (int)size) {
+        NETWORK_LOGE("send error: %d %d/%zu", WSAGetLastError(), nbytes, size);
+        return false;
+    }
+#else
     inet_aton(host.c_str(), &remoteAddr.sin_addr);
-
     ssize_t nbytes = sendto(socket_, data, size, 0, (struct sockaddr *)&remoteAddr, sizeof(remoteAddr));
     if (nbytes != (ssize_t)size) {
         NETWORK_LOGE("send error: %s %zd/%zu", strerror(errno), nbytes, size);
         return false;
     }
+#endif
     return true;
 }
 
-bool UdpServer::Send(int fd, std::string host, uint16_t port, std::shared_ptr<DataBuffer> buffer)
+bool UdpServer::Send(socket_t fd, std::string host, uint16_t port, std::shared_ptr<DataBuffer> buffer)
 {
     if (!buffer)
         return false;
     return Send(fd, host, port, buffer->Data(), buffer->Size());
 }
 
-bool UdpServer::Send(int fd, std::string host, uint16_t port, const std::string &str)
+bool UdpServer::Send(socket_t fd, std::string host, uint16_t port, const std::string &str)
 {
     return Send(fd, host, port, str.data(), str.size());
 }
 
-void UdpServer::HandleReceive(int fd)
+void UdpServer::HandleReceive(socket_t fd)
 {
     if (fd != socket_) {
         NETWORK_LOGE("fd (%d) mismatch socket(%d)", fd, socket_);
@@ -189,8 +247,14 @@ void UdpServer::HandleReceive(int fd)
     socklen_t addrLen = sizeof(clientAddr);
 
     while (true) {
+#ifdef _WIN32
+        int addrLenWin = sizeof(clientAddr);
+        ssize_t nbytes = recvfrom(socket_, (char*)readBuffer_->Data(), (int)readBuffer_->Capacity(), 0,
+                         (struct sockaddr *)&clientAddr, &addrLenWin);
+#else
         ssize_t nbytes = recvfrom(socket_, readBuffer_->Data(), readBuffer_->Capacity(), 0,
-                                  (struct sockaddr *)&clientAddr, &addrLen);
+                         (struct sockaddr *)&clientAddr, &addrLen);
+#endif
         std::string host = inet_ntoa(clientAddr.sin_addr);
         uint16_t port = ntohs(clientAddr.sin_port);
         NETWORK_LOGD("recvfrom %s:%d, size: %d", host.c_str(), port, (int)nbytes);
@@ -199,7 +263,6 @@ void UdpServer::HandleReceive(int fd)
             if (!listener_.expired()) {
                 auto dataBuffer = DataBuffer::PoolAlloc(nbytes);
                 dataBuffer->Assign(readBuffer_->Data(), nbytes);
-
                 auto listenerWeak = listener_;
                 auto self = shared_from_this();
                 auto task = std::make_shared<TaskHandler<void>>([listenerWeak, self, fd, host, port, dataBuffer]() {
@@ -209,17 +272,23 @@ void UdpServer::HandleReceive(int fd)
                         listener->OnReceive(session, dataBuffer);
                     }
                 });
-
                 taskQueue_->EnqueueTask(task);
             }
             continue;
         }
 
+#ifdef _WIN32
+        int err = WSAGetLastError();
+        if (nbytes == 0 || err == WSAEWOULDBLOCK) {
+            break;
+        }
+        std::string info = std::to_string(err);
+#else
         if (nbytes == 0 || errno == EAGAIN || errno == EWOULDBLOCK) {
             break;
         }
-
         std::string info = strerror(errno);
+#endif
         if (!listener_.expired()) {
             auto listenerWeak = listener_;
             auto self = shared_from_this();
@@ -232,7 +301,6 @@ void UdpServer::HandleReceive(int fd)
                     NETWORK_LOGE("not found listener!");
                 }
             });
-
             taskQueue_->EnqueueTask(task);
         }
         break;
@@ -241,16 +309,24 @@ void UdpServer::HandleReceive(int fd)
 
 uint16_t UdpServer::GetIdlePort()
 {
-    int sock;
+    socket_t sock;
     struct sockaddr_in addr;
 
     uint16_t i;
     for (i = gIdlePort; i < gIdlePort + 100; i++) {
+#ifdef _WIN32
+        sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+        if (sock == INVALID_SOCKET) {
+            NETWORK_LOGE("socket creation failed: %d", WSAGetLastError());
+            return (uint16_t)-1;
+        }
+#else
         sock = socket(AF_INET, SOCK_DGRAM, 0);
         if (sock < 0) {
             perror("socket creation failed");
-            return -1;
+            return (uint16_t)-1;
         }
+#endif
 
         addr.sin_family = AF_INET;
         addr.sin_addr.s_addr = htonl(INADDR_ANY);
@@ -260,7 +336,6 @@ uint16_t UdpServer::GetIdlePort()
             close(sock);
             continue;
         }
-
         close(sock);
         break;
     }

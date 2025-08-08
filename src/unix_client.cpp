@@ -26,24 +26,24 @@ constexpr int RECV_BUFFER_MAX_SIZE = 4096;
 
 class UnixClientHandler : public EventHandler {
 public:
-    UnixClientHandler(int fd, std::weak_ptr<UnixClient> client) : fd_(fd), client_(client), writeEventsEnabled_(false)
+    UnixClientHandler(socket_t fd, std::weak_ptr<UnixClient> client) : fd_(fd), client_(client), writeEventsEnabled_(false)
     {
     }
-    void HandleRead(int fd) override
+    void HandleRead(socket_t fd) override
     {
         if (auto c = client_.lock()) {
             c->HandleReceive(fd);
         }
     }
-    void HandleWrite(int fd) override { ProcessSendQueue(); }
-    void HandleError(int fd) override
+    void HandleWrite(socket_t fd) override { ProcessSendQueue(); }
+    void HandleError(socket_t fd) override
     {
         NETWORK_LOGE("UNIX client connection error on fd: %d", fd);
         if (auto c = client_.lock()) {
             c->HandleConnectionClose(fd, true, "Connection error");
         }
     }
-    void HandleClose(int fd) override
+    void HandleClose(socket_t fd) override
     {
         NETWORK_LOGD("UNIX client connection close on fd: %d", fd);
         if (auto c = client_.lock()) {
@@ -109,7 +109,7 @@ private:
             DisableWriteEvents();
         }
     }
-    int fd_;
+    socket_t fd_;
     std::weak_ptr<UnixClient> client_;
     std::queue<std::shared_ptr<DataBuffer>> sendQueue_;
     bool writeEventsEnabled_;
@@ -206,7 +206,7 @@ void UnixClient::Close()
     }
 }
 
-void UnixClient::HandleReceive(int fd)
+void UnixClient::HandleReceive(socket_t fd)
 {
     NETWORK_LOGD("fd: %d", fd);
     if (readBuffer_ == nullptr) {
@@ -245,7 +245,7 @@ void UnixClient::HandleReceive(int fd)
     }
 }
 
-void UnixClient::HandleConnectionClose(int fd, bool isError, const std::string &reason)
+void UnixClient::HandleConnectionClose(socket_t fd, bool isError, const std::string &reason)
 {
     NETWORK_LOGD("Closing UNIX client connection fd: %d, reason: %s, isError: %s", fd, reason.c_str(),
                  isError ? "true" : "false");

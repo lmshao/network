@@ -10,12 +10,18 @@
 
 #include "udp_client.h"
 
+#ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#pragma comment(lib, "ws2_32.lib")
+#else
 #include <arpa/inet.h>
-#include <assert.h>
 #include <sys/socket.h>
 #include <unistd.h>
-
 #include <cerrno>
+#endif
+
+#include <assert.h>
 
 #include "event_reactor.h"
 #include "log.h"
@@ -25,34 +31,34 @@ constexpr int RECV_BUFFER_MAX_SIZE = 4096;
 
 class UdpClientHandler : public EventHandler {
 public:
-    UdpClientHandler(int fd, std::weak_ptr<UdpClient> client) : fd_(fd), client_(client) {}
+    UdpClientHandler(socket_t fd, std::weak_ptr<UdpClient> client) : fd_(fd), client_(client) {}
 
-    void HandleRead(int fd) override
+    void HandleRead(socket_t fd) override
     {
         if (auto client = client_.lock()) {
             client->HandleReceive(fd);
         }
     }
 
-    void HandleWrite(int fd) override {}
+    void HandleWrite(socket_t fd) override {}
 
-    void HandleError(int fd) override
+    void HandleError(socket_t fd) override
     {
-        NETWORK_LOGE("UDP client connection error on fd: %d", fd);
+        NETWORK_LOGE("UDP client connection error on socket: " SOCKET_FMT, fd);
         if (auto client = client_.lock()) {
             client->HandleConnectionClose(fd, true, "Connection error");
         }
     }
 
-    void HandleClose(int fd) override
+    void HandleClose(socket_t fd) override
     {
-        NETWORK_LOGD("UDP client connection close on fd: %d", fd);
+        NETWORK_LOGD("UDP client connection close on socket: " SOCKET_FMT, fd);
         if (auto client = client_.lock()) {
             client->HandleConnectionClose(fd, false, "Connection closed");
         }
     }
 
-    int GetHandle() const override { return fd_; }
+    socket_t GetHandle() const override { return fd_; }
 
     int GetEvents() const override
     {
@@ -61,7 +67,7 @@ public:
     }
 
 private:
-    int fd_;
+    socket_t fd_;
     std::weak_ptr<UdpClient> client_;
 };
 
@@ -82,16 +88,37 @@ UdpClient::~UdpClient()
 
 bool UdpClient::Init()
 {
+#ifdef _WIN32
+    socket_ = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (socket_ == INVALID_SOCKET) {
+        NETWORK_LOGE("socket error: %d", WSAGetLastError());
+        return false;
+    }
+
+    u_long mode = 1;
+    if (ioctlsocket(socket_, FIONBIO, &mode) != 0) {
+        NETWORK_LOGE("ioctlsocket FIONBIO error: %d", WSAGetLastError());
+        closesocket(socket_);
+        socket_ = INVALID_SOCKET;
+        return false;
+    }
+#else
     socket_ = socket(AF_INET, SOCK_DGRAM | SOCK_NONBLOCK, 0);
     if (socket_ == INVALID_SOCKET) {
         NETWORK_LOGE("socket error: %s", strerror(errno));
         return false;
     }
+#endif
 
     memset(&serverAddr_, 0, sizeof(serverAddr_));
     serverAddr_.sin_family = AF_INET;
     serverAddr_.sin_port = htons(remotePort_);
+
+#ifdef _WIN32
+    inet_pton(AF_INET, remoteIp_.c_str(), &serverAddr_.sin_addr);
+#else
     inet_aton(remoteIp_.c_str(), &serverAddr_.sin_addr);
+#endif
 
     if (!localIp_.empty() || localPort_ != 0) {
         struct sockaddr_in localAddr;
@@ -101,17 +128,32 @@ bool UdpClient::Init()
         if (localIp_.empty()) {
             localIp_ = "0.0.0.0";
         }
-        inet_aton(localIp_.c_str(), &localAddr.sin_addr);
 
+#ifdef _WIN32
+        if (inet_pton(AF_INET, localIp_.c_str(), &localAddr.sin_addr) != 1) {
+            NETWORK_LOGE("inet_pton localIp error");
+            closesocket(socket_);
+            socket_ = INVALID_SOCKET;
+            return false;
+        }
+        int ret = bind(socket_, (struct sockaddr *)&localAddr, (int)sizeof(localAddr));
+        if (ret != 0) {
+            NETWORK_LOGE("bind error: %d", WSAGetLastError());
+            closesocket(socket_);
+            socket_ = INVALID_SOCKET;
+            return false;
+        }
+#else
+        inet_aton(localIp_.c_str(), &localAddr.sin_addr);
         int ret = bind(socket_, (struct sockaddr *)&localAddr, (socklen_t)sizeof(localAddr));
         if (ret != 0) {
             NETWORK_LOGE("bind error: %s", strerror(errno));
             return false;
         }
+#endif
     }
 
     taskQueue_->Start();
-
     clientHandler_ = std::make_shared<UdpClientHandler>(socket_, shared_from_this());
     if (!EventReactor::GetInstance()->RegisterHandler(clientHandler_)) {
         NETWORK_LOGE("Failed to register UDP client handler");
@@ -126,7 +168,11 @@ void UdpClient::Close()
 {
     if (socket_ != INVALID_SOCKET && clientHandler_) {
         EventReactor::GetInstance()->RemoveHandler(socket_);
+#ifdef _WIN32
+        closesocket(socket_);
+#else
         close(socket_);
+#endif
         socket_ = INVALID_SOCKET;
         clientHandler_.reset();
     }
@@ -144,12 +190,19 @@ bool UdpClient::Send(const void *data, size_t len)
         return false;
     }
 
+#ifdef _WIN32
+    int nbytes = sendto(socket_, (const char*)data, (int)len, 0, (struct sockaddr *)&serverAddr_, (int)sizeof(serverAddr_));
+    if (nbytes == SOCKET_ERROR) {
+        NETWORK_LOGE("sendto error: %d", WSAGetLastError());
+        return false;
+    }
+#else
     ssize_t nbytes = sendto(socket_, data, len, 0, (struct sockaddr *)&serverAddr_, (socklen_t)(sizeof(serverAddr_)));
     if (nbytes == -1) {
         NETWORK_LOGE("sendto error: %s", strerror(errno));
         return false;
     }
-
+#endif
     return true;
 }
 
@@ -169,16 +222,19 @@ bool UdpClient::Send(std::shared_ptr<DataBuffer> data)
     return Send(data->Data(), data->Size());
 }
 
-void UdpClient::HandleReceive(int fd)
+void UdpClient::HandleReceive(socket_t fd)
 {
-    NETWORK_LOGD("fd: %d", fd);
+    NETWORK_LOGD("fd: " SOCKET_FMT, fd);
     if (readBuffer_ == nullptr) {
         readBuffer_ = DataBuffer::PoolAlloc(RECV_BUFFER_MAX_SIZE);
     }
 
     while (true) {
+#ifdef _WIN32
+        ssize_t nbytes = recv(fd, (char*)readBuffer_->Data(), (int)readBuffer_->Capacity(), 0);
+#else
         ssize_t nbytes = recv(fd, readBuffer_->Data(), readBuffer_->Capacity(), MSG_DONTWAIT);
-
+#endif
         if (nbytes > 0) {
             if (!listener_.expired()) {
                 auto dataBuffer = DataBuffer::PoolAlloc(nbytes);
@@ -196,31 +252,38 @@ void UdpClient::HandleReceive(int fd)
             }
             continue;
         } else if (nbytes == 0) {
-            NETWORK_LOGW("Disconnect fd[%d]", fd);
+            NETWORK_LOGW("Disconnect fd[" SOCKET_FMT "]", fd);
             // Do not call HandleConnectionClose directly; let the event system handle EPOLLHUP
             break;
         } else {
-            if (errno == EAGAIN || errno == EWOULDBLOCK) { // Usually same value, but check both for portability
-                // Normal case: no data available to read, return directly
+#ifdef _WIN32
+            int err = WSAGetLastError();
+            if (err == WSAEWOULDBLOCK) {
                 break;
             }
-
+            NETWORK_LOGE("recv error: %d", err);
+            std::string info = std::to_string(err);
+#else
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                break;
+            }
             std::string info = strerror(errno);
             NETWORK_LOGE("recv error: %s(%d)", info.c_str(), errno);
+#endif
             HandleConnectionClose(fd, true, info);
-        }
 
+        }
         break;
     }
 }
 
-void UdpClient::HandleConnectionClose(int fd, bool isError, const std::string &reason)
+void UdpClient::HandleConnectionClose(socket_t fd, bool isError, const std::string &reason)
 {
-    NETWORK_LOGD("Closing UDP client connection fd: %d, reason: %s, isError: %s", fd, reason.c_str(),
+    NETWORK_LOGD("Closing UDP client connection fd: " SOCKET_FMT ", reason: %s, isError: %s", fd, reason.c_str(),
                  isError ? "true" : "false");
 
     if (socket_ != fd) {
-        NETWORK_LOGD("Connection fd: %d already cleaned up", fd);
+        NETWORK_LOGD("Connection fd: " SOCKET_FMT " already cleaned up", fd);
         return;
     }
 

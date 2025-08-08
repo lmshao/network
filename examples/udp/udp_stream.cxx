@@ -91,7 +91,7 @@ private:
 
 class StreamClientListener : public IClientListener {
 public:
-    void OnReceive(int fd, std::shared_ptr<DataBuffer> buffer) override
+    void OnReceive(socket_t fd, std::shared_ptr<DataBuffer> buffer) override
     {
         std::string msg = buffer->ToString();
         if (msg.find("[server-stat]") == 0) {
@@ -101,9 +101,9 @@ public:
         }
     }
 
-    void OnClose(int fd) override { printf("[client] Connection closed, fd: %d\n", fd); }
+    void OnClose(socket_t fd) override { printf("[client] Connection closed, fd: %d\n", fd); }
 
-    void OnError(int fd, const std::string &errorInfo) override
+    void OnError(socket_t fd, const std::string &errorInfo) override
     {
         printf("[client] Error: %s, fd: %d\n", errorInfo.c_str(), fd);
     }

@@ -11,6 +11,7 @@
 #ifndef NETWORK_UNIX_SERVER_H
 #define NETWORK_UNIX_SERVER_H
 
+#ifndef _WIN32
 #include <sys/un.h>
 
 #include <memory>
@@ -20,6 +21,7 @@
 #include "iserver_listener.h"
 #include "session.h"
 #include "task_queue.h"
+#include "common.h"
 
 namespace lmshao::network {
 class EventHandler;
@@ -29,7 +31,6 @@ class UnixServer : public BaseServer, public std::enable_shared_from_this<UnixSe
 
     friend class UnixServerHandler;
     friend class UnixConnectionHandler;
-    static constexpr int INVALID_SOCKET = -1;
 
 public:
     static std::shared_ptr<UnixServer> Create(const std::string &socketPath)
@@ -43,21 +44,21 @@ public:
     void SetListener(std::shared_ptr<IServerListener> listener) override { listener_ = listener; }
     bool Start() override;
     bool Stop() override;
-    bool Send(int fd, std::string host, uint16_t port, std::shared_ptr<DataBuffer> buffer) override;
-    bool Send(int fd, std::string host, uint16_t port, const std::string &str) override;
-    bool Send(int fd, std::string host, uint16_t port, const void *data, size_t size) override;
+    bool Send(socket_t fd, std::string host, uint16_t port, std::shared_ptr<DataBuffer> buffer) override;
+    bool Send(socket_t fd, std::string host, uint16_t port, const std::string &str) override;
+    bool Send(socket_t fd, std::string host, uint16_t port, const void *data, size_t size) override;
     void Close();
-    int GetSocketFd() const { return socket_; }
+    socket_t GetSocketFd() const { return socket_; }
 
 protected:
     explicit UnixServer(const std::string &socketPath);
-    void HandleAccept(int fd);
-    void HandleReceive(int fd);
-    void HandleConnectionClose(int fd, bool isError, const std::string &reason);
+    void HandleAccept(socket_t fd);
+    void HandleReceive(socket_t fd);
+    void HandleConnectionClose(socket_t fd, bool isError, const std::string &reason);
 
 private:
     std::string socketPath_;
-    int socket_ = INVALID_SOCKET;
+    socket_t socket_ = INVALID_SOCKET;
     struct sockaddr_un serverAddr_;
 
     std::weak_ptr<IServerListener> listener_;
@@ -71,4 +72,5 @@ private:
 
 } // namespace lmshao::network
 
+#endif // _WIN32
 #endif // NETWORK_UNIX_SERVER_H
