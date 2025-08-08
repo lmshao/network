@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.10)
 project(network)
 set(CMAKE_CXX_STANDARD 17)
 
+# Include headers
 include_directories(${PROJECT_SOURCE_DIR}/include/network)
 
 # Collect source files
@@ -21,24 +22,21 @@ endif()
 
 # Compiler flags
 if(MSVC)
-    # Windows MSVC compiler flags
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /W3")
+    set(CMAKE_CXX_FLAGS_DEBUG "/Zi /Od /DDEBUG")
+    set(CMAKE_CXX_FLAGS_RELEASE "/O2 /DNDEBUG /DRELEASE")
 else()
-    # GCC/Clang compiler flags
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-error -Wno-format-truncation")
+    set(CMAKE_CXX_FLAGS_DEBUG "-g -O0 -DDEBUG")
+    set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG -DRELEASE")
 endif()
-
-# Debug-specific flags
-set(CMAKE_CXX_FLAGS_DEBUG "-g -O0 -DDEBUG")
-
-# Release-specific flags  
-set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG -DRELEASE")
 
 # Print build configuration
 message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
 message(STATUS "C++ flags: ${CMAKE_CXX_FLAGS}")
 message(STATUS "C++ flags for ${CMAKE_BUILD_TYPE}: ${CMAKE_CXX_FLAGS_${CMAKE_BUILD_TYPE}}")
 
+# Add main library
 add_library(${PROJECT_NAME} STATIC ${SOURCES})
 
 # Find and link thread library (different approach for Windows vs Unix)

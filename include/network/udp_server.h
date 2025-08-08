@@ -23,6 +23,7 @@
 #include <string>
 
 #include "base_server.h"
+#include "common.h"
 #include "iserver_listener.h"
 #include "session.h"
 #include "task_queue.h"
@@ -73,6 +74,15 @@ private:
     std::shared_ptr<DataBuffer> readBuffer_;
 
     std::shared_ptr<EventHandler> serverHandler_;
+
+#ifdef _WIN32
+    // Windows IOCP async receive support
+    void StartAsyncReceive();
+    OVERLAPPED recvOverlapped_;
+    WSABUF recvBuffer_;
+    struct sockaddr_in clientAddr_;
+    int clientAddrLen_;
+#endif
 };
 
 } // namespace lmshao::network

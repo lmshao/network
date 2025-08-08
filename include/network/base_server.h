@@ -13,8 +13,8 @@
 
 #include <memory>
 
+#include "common.h"
 #include "data_buffer.h"
-
 namespace lmshao::network {
 
 class IServerListener;

@@ -36,10 +36,10 @@
 
 namespace lmshao::network {
 enum class EventType {
-    READ = 0x01,
-    WRITE = 0x02,
-    ERROR = 0x04,
-    CLOSE = 0x08
+    EVT_READ = 0x01,
+    EVT_WRITE = 0x02,
+    EVT_ERROR = 0x04,
+    EVT_CLOSE = 0x08
 };
 
 #ifdef _WIN32
@@ -70,7 +70,7 @@ public:
     virtual void HandleClose(socket_t fd) = 0;
 
     virtual socket_t GetHandle() const = 0;
-    virtual int GetEvents() const { return static_cast<int>(EventType::READ); }
+    virtual int GetEvents() const { return static_cast<int>(EventType::EVT_READ); }
 };
 
 class EventReactor : public Singleton<EventReactor> {
@@ -83,6 +83,11 @@ public:
     bool RegisterHandler(std::shared_ptr<EventHandler> handler);
     bool RemoveHandler(socket_t fd);
     bool ModifyHandler(socket_t fd, int events);
+
+#ifdef _WIN32
+    HANDLE GetIOCPHandle() const { return iocpHandle_; }
+    bool RegisterHandlerWithoutIOCP(std::shared_ptr<EventHandler> handler);
+#endif
 
     void SetThreadName(const std::string &name);
 

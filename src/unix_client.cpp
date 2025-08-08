@@ -26,7 +26,8 @@ constexpr int RECV_BUFFER_MAX_SIZE = 4096;
 
 class UnixClientHandler : public EventHandler {
 public:
-    UnixClientHandler(socket_t fd, std::weak_ptr<UnixClient> client) : fd_(fd), client_(client), writeEventsEnabled_(false)
+    UnixClientHandler(socket_t fd, std::weak_ptr<UnixClient> client)
+        : fd_(fd), client_(client), writeEventsEnabled_(false)
     {
     }
     void HandleRead(socket_t fd) override
@@ -53,10 +54,10 @@ public:
     int GetHandle() const override { return fd_; }
     int GetEvents() const override
     {
-        int events =
-            static_cast<int>(EventType::READ) | static_cast<int>(EventType::ERROR) | static_cast<int>(EventType::CLOSE);
+        int events = static_cast<int>(EventType::EVT_READ) | static_cast<int>(EventType::EVT_ERROR) |
+                     static_cast<int>(EventType::EVT_CLOSE);
         if (writeEventsEnabled_)
-            events |= static_cast<int>(EventType::WRITE);
+            events |= static_cast<int>(EventType::EVT_WRITE);
         return events;
     }
     void QueueSend(std::shared_ptr<DataBuffer> buffer)

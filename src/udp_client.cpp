@@ -18,6 +18,7 @@
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <unistd.h>
+
 #include <cerrno>
 #endif
 
@@ -62,8 +63,8 @@ public:
 
     int GetEvents() const override
     {
-        return static_cast<int>(EventType::READ) | static_cast<int>(EventType::ERROR) |
-               static_cast<int>(EventType::CLOSE);
+        return static_cast<int>(EventType::EVT_READ) | static_cast<int>(EventType::EVT_ERROR) |
+               static_cast<int>(EventType::EVT_CLOSE);
     }
 
 private:
@@ -89,9 +90,15 @@ UdpClient::~UdpClient()
 bool UdpClient::Init()
 {
 #ifdef _WIN32
-    socket_ = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    WSADATA wsaData;
+    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
+        NETWORK_LOGE("WSAStartup failed");
+        return false;
+    }
+
+    socket_ = WSASocket(AF_INET, SOCK_DGRAM, IPPROTO_UDP, NULL, 0, WSA_FLAG_OVERLAPPED);
     if (socket_ == INVALID_SOCKET) {
-        NETWORK_LOGE("socket error: %d", WSAGetLastError());
+        NETWORK_LOGE("WSASocket error: %d", WSAGetLastError());
         return false;
     }
 
@@ -151,6 +158,29 @@ bool UdpClient::Init()
             return false;
         }
 #endif
+    } else {
+        // Always bind to receive data for UDP
+        struct sockaddr_in localAddr;
+        memset(&localAddr, 0, sizeof(localAddr));
+        localAddr.sin_family = AF_INET;
+        localAddr.sin_addr.s_addr = INADDR_ANY;
+        localAddr.sin_port = 0; // Let system choose port
+
+#ifdef _WIN32
+        int ret = bind(socket_, (struct sockaddr *)&localAddr, (int)sizeof(localAddr));
+        if (ret != 0) {
+            NETWORK_LOGE("bind error: %d", WSAGetLastError());
+            closesocket(socket_);
+            socket_ = INVALID_SOCKET;
+            return false;
+        }
+#else
+        int ret = bind(socket_, (struct sockaddr *)&localAddr, (socklen_t)sizeof(localAddr));
+        if (ret != 0) {
+            NETWORK_LOGE("bind error: %s", strerror(errno));
+            return false;
+        }
+#endif
     }
 
     taskQueue_->Start();
@@ -159,6 +189,11 @@ bool UdpClient::Init()
         NETWORK_LOGE("Failed to register UDP client handler");
         return false;
     }
+
+#ifdef _WIN32
+    // Start async receive for Windows IOCP
+    StartAsyncReceive();
+#endif
 
     NETWORK_LOGD("UdpClient initialized with new EventHandler interface");
     return true;
@@ -191,11 +226,18 @@ bool UdpClient::Send(const void *data, size_t len)
     }
 
 #ifdef _WIN32
-    int nbytes = sendto(socket_, (const char*)data, (int)len, 0, (struct sockaddr *)&serverAddr_, (int)sizeof(serverAddr_));
+    WSABUF wsaBuf;
+    wsaBuf.buf = (CHAR *)data;
+    wsaBuf.len = (ULONG)len;
+    DWORD bytesSent = 0;
+    int ret = WSASendTo(socket_, &wsaBuf, 1, &bytesSent, 0, (struct sockaddr *)&serverAddr_, (int)sizeof(serverAddr_),
+                        NULL, NULL);
+    int nbytes = (ret == 0) ? bytesSent : SOCKET_ERROR;
     if (nbytes == SOCKET_ERROR) {
         NETWORK_LOGE("sendto error: %d", WSAGetLastError());
         return false;
     }
+    NETWORK_LOGE("WSASendTo sent %d bytes", nbytes);
 #else
     ssize_t nbytes = sendto(socket_, data, len, 0, (struct sockaddr *)&serverAddr_, (socklen_t)(sizeof(serverAddr_)));
     if (nbytes == -1) {
@@ -225,16 +267,47 @@ bool UdpClient::Send(std::shared_ptr<DataBuffer> data)
 void UdpClient::HandleReceive(socket_t fd)
 {
     NETWORK_LOGD("fd: " SOCKET_FMT, fd);
+
+#ifdef _WIN32
+    // Windows: data is already received via IOCP into readBuffer_
+    // Get the bytes received from IOCP completion
+    DWORD bytesReceived = 0;
+    DWORD flags = 0;
+    if (WSAGetOverlappedResult(socket_, &recvOverlapped_, &bytesReceived, FALSE, &flags)) {
+        NETWORK_LOGD("recvfrom size: %d", (int)bytesReceived);
+
+        if (bytesReceived > 0) {
+            if (!listener_.expired()) {
+                auto dataBuffer = DataBuffer::PoolAlloc(bytesReceived);
+                dataBuffer->Assign(readBuffer_->Data(), bytesReceived);
+                auto listenerWeak = listener_;
+                auto task = std::make_shared<TaskHandler<void>>([listenerWeak, dataBuffer, fd]() {
+                    auto listener = listenerWeak.lock();
+                    if (listener) {
+                        listener->OnReceive(fd, dataBuffer);
+                    }
+                });
+                if (taskQueue_) {
+                    taskQueue_->EnqueueTask(task);
+                }
+            }
+        }
+    }
+
+    // Start next async receive
+    StartAsyncReceive();
+#else
+    // Linux: synchronous receive with recvfrom
     if (readBuffer_ == nullptr) {
         readBuffer_ = DataBuffer::PoolAlloc(RECV_BUFFER_MAX_SIZE);
     }
 
     while (true) {
-#ifdef _WIN32
-        ssize_t nbytes = recv(fd, (char*)readBuffer_->Data(), (int)readBuffer_->Capacity(), 0);
-#else
-        ssize_t nbytes = recv(fd, readBuffer_->Data(), readBuffer_->Capacity(), MSG_DONTWAIT);
-#endif
+        struct sockaddr_in fromAddr;
+        socklen_t fromAddrLen = sizeof(fromAddr);
+        ssize_t nbytes = recvfrom(fd, readBuffer_->Data(), readBuffer_->Capacity(), MSG_DONTWAIT,
+                                  (struct sockaddr *)&fromAddr, &fromAddrLen);
+
         if (nbytes > 0) {
             if (!listener_.expired()) {
                 auto dataBuffer = DataBuffer::PoolAlloc(nbytes);
@@ -253,28 +326,18 @@ void UdpClient::HandleReceive(socket_t fd)
             continue;
         } else if (nbytes == 0) {
             NETWORK_LOGW("Disconnect fd[" SOCKET_FMT "]", fd);
-            // Do not call HandleConnectionClose directly; let the event system handle EPOLLHUP
             break;
         } else {
-#ifdef _WIN32
-            int err = WSAGetLastError();
-            if (err == WSAEWOULDBLOCK) {
-                break;
-            }
-            NETWORK_LOGE("recv error: %d", err);
-            std::string info = std::to_string(err);
-#else
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
                 break;
             }
             std::string info = strerror(errno);
-            NETWORK_LOGE("recv error: %s(%d)", info.c_str(), errno);
-#endif
+            NETWORK_LOGE("recvfrom error: %s(%d)", info.c_str(), errno);
             HandleConnectionClose(fd, true, info);
-
+            break;
         }
-        break;
     }
+#endif
 }
 
 void UdpClient::HandleConnectionClose(socket_t fd, bool isError, const std::string &reason)
@@ -309,4 +372,34 @@ void UdpClient::HandleConnectionClose(socket_t fd, bool isError, const std::stri
         }
     }
 }
+
+#ifdef _WIN32
+void UdpClient::StartAsyncReceive()
+{
+    if (readBuffer_ == nullptr) {
+        readBuffer_ = DataBuffer::PoolAlloc(RECV_BUFFER_MAX_SIZE);
+    }
+
+    // Prepare for async receive
+    memset(&recvOverlapped_, 0, sizeof(recvOverlapped_));
+    recvBuffer_.buf = (char *)readBuffer_->Data();
+    recvBuffer_.len = (ULONG)readBuffer_->Capacity();
+    remoteAddrLen_ = sizeof(remoteAddr_);
+
+    DWORD flags = 0;
+    DWORD bytesReceived = 0;
+
+    int result = WSARecvFrom(socket_, &recvBuffer_, 1, &bytesReceived, &flags, (struct sockaddr *)&remoteAddr_,
+                             &remoteAddrLen_, &recvOverlapped_, NULL);
+
+    if (result == SOCKET_ERROR) {
+        int error = WSAGetLastError();
+        if (error != WSA_IO_PENDING) {
+            NETWORK_LOGE("WSARecvFrom failed: %d", error);
+        }
+        // WSA_IO_PENDING is expected for async operation
+    }
+}
+#endif
+
 } // namespace lmshao::network

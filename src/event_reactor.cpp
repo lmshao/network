@@ -59,7 +59,7 @@ EventReactor::EventReactor()
     wakeupFd_ = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
 #endif
 
-    eventThread_ = std::make_unique<std::thread>([&]() { this->Run(); });
+    eventThread_ = std::make_unique<std::thread>([this]() { this->Run(); });
     SetThreadName("EventReactor");
     std::unique_lock<std::mutex> taskLock(signalMutex_);
     runningSignal_.wait_for(taskLock, std::chrono::milliseconds(5), [this] { return this->running_ == true; });
@@ -160,9 +160,53 @@ void EventReactor::Run()
     // Common event loop for both Windows and Linux
     while (running_) {
 #ifdef _WIN32
-        // Windows IOCP event processing
-        BOOL result = GetQueuedCompletionStatus(iocpHandle_, &bytesTransferred, &completionKey, &overlapped, 100);
+        // Windows: Mixed model - poll listening sockets with select, data sockets with IOCP
 
+        // First check for accept events on listening sockets using select
+        fd_set readfds;
+        FD_ZERO(&readfds);
+        socket_t maxfd = 0;
+        bool hasListeningSockets = false;
+
+        {
+            std::shared_lock<std::shared_mutex> lock(mutex_);
+            for (const auto &pair : handlers_) {
+                auto handler = pair.second;
+                int events = handler->GetEvents();
+                // Check if this is a listening socket (only has READ events and not doing data I/O)
+                if ((events & static_cast<int>(EventType::EVT_READ)) &&
+                    !(events & static_cast<int>(EventType::EVT_WRITE))) {
+                    socket_t fd = pair.first;
+                    FD_SET(fd, &readfds);
+                    if (fd > maxfd)
+                        maxfd = fd;
+                    hasListeningSockets = true;
+                }
+            }
+        }
+
+        if (hasListeningSockets) {
+            struct timeval timeout;
+            timeout.tv_sec = 0;
+            timeout.tv_usec = 10000; // 10ms
+
+            int result = select(maxfd + 1, &readfds, NULL, NULL, &timeout);
+            if (result > 0) {
+                std::shared_lock<std::shared_mutex> lock(mutex_);
+                for (const auto &pair : handlers_) {
+                    socket_t fd = pair.first;
+                    if (FD_ISSET(fd, &readfds)) {
+                        NETWORK_LOGD("Select: accept event on listening socket: " SOCKET_FMT, fd);
+                        lock.unlock();
+                        DispatchEvent(fd, static_cast<int>(EventType::EVT_READ));
+                        lock.lock();
+                    }
+                }
+            }
+        }
+
+        // Then handle IOCP events for data sockets
+        BOOL result = GetQueuedCompletionStatus(iocpHandle_, &bytesTransferred, &completionKey, &overlapped, 10);
         if (!result) {
             DWORD error = GetLastError();
             if (error == WAIT_TIMEOUT) {
@@ -181,13 +225,14 @@ void EventReactor::Run()
             break;
         }
 
-        // Use completionKey to decode socket and event type
-        IocpEventInfo eventInfo = IocpEventInfo::Decode(completionKey);
-        SOCKET socket = eventInfo.socket;
-        EventType eventType = eventInfo.eventType;
+        // For our implementation, treat all IOCP completions as read events
+        // The completionKey contains the socket descriptor
+        socket_t socket = static_cast<socket_t>(completionKey);
 
-        // Dispatch the specific event type
-        DispatchEvent(static_cast<int>(socket), static_cast<int>(eventType));
+        NETWORK_LOGD("IOCP completion: socket=" SOCKET_FMT ", bytes=%lu", socket, bytesTransferred);
+
+        // Dispatch as read event
+        DispatchEvent(socket, static_cast<int>(EventType::EVT_READ));
 #else
         // Linux epoll event processing
         nfds = epoll_wait(epollFd_, readyEvents, EPOLL_WAIT_EVENT_NUMS_MAX, 100);
@@ -244,7 +289,7 @@ bool EventReactor::RegisterHandler(std::shared_ptr<EventHandler> handler)
 #ifdef _WIN32
     socket_t socket = handler->GetHandle();
     int events = handler->GetEvents();
-    NETWORK_LOGD("[%p] Register handler for socket:" SOCKET_FMT ", events:0x%x", this, SOCKET_ARG(socket), events);
+    NETWORK_LOGD("[%p] Register handler for socket:" SOCKET_FMT ", events:0x%x", this, socket, events);
 
     if (!running_) {
         NETWORK_LOGE("Reactor has exited");
@@ -256,33 +301,14 @@ bool EventReactor::RegisterHandler(std::shared_ptr<EventHandler> handler)
         CreateIoCompletionPort(reinterpret_cast<HANDLE>(socket), iocpHandle_, static_cast<ULONG_PTR>(socket), 0);
 
     if (result == NULL) {
-        NETWORK_LOGE("CreateIoCompletionPort failed for socket " SOCKET_FMT ": %lu", SOCKET_ARG(socket),
-                     GetLastError());
-        return false;
-    }
-
-    // Register for read events
-    IocpEventInfo readInfo(socket, EventType::READ);
-    HANDLE readResult = CreateIoCompletionPort(reinterpret_cast<HANDLE>(socket), iocpHandle_, readInfo.Encode(), 0);
-    if (readResult == NULL) {
-        NETWORK_LOGE("CreateIoCompletionPort failed for read event on socket " SOCKET_FMT ": %lu", SOCKET_ARG(socket),
-                     GetLastError());
-        return false;
-    }
-
-    // Register for write events
-    IocpEventInfo writeInfo(socket, EventType::WRITE);
-    HANDLE writeResult = CreateIoCompletionPort(reinterpret_cast<HANDLE>(socket), iocpHandle_, writeInfo.Encode(), 0);
-    if (writeResult == NULL) {
-        NETWORK_LOGE("CreateIoCompletionPort failed for write event on socket " SOCKET_FMT ": %lu", SOCKET_ARG(socket),
-                     GetLastError());
+        NETWORK_LOGE("CreateIoCompletionPort failed for socket " SOCKET_FMT ": %lu", socket, GetLastError());
         return false;
     }
 
     std::unique_lock<std::shared_mutex> lock(mutex_);
     handlers_.emplace(socket, handler);
 
-    NETWORK_LOGD("Handler registered successfully for socket:" SOCKET_FMT, SOCKET_ARG(socket));
+    NETWORK_LOGD("Handler registered successfully for socket:" SOCKET_FMT, socket);
     return true;
 #else
     socket_t fd = handler->GetHandle();
@@ -295,16 +321,16 @@ bool EventReactor::RegisterHandler(std::shared_ptr<EventHandler> handler)
     }
 
     uint32_t epollEvents = 0;
-    if (events & static_cast<int>(EventType::READ)) {
+    if (events & static_cast<int>(EventType::EVT_READ)) {
         epollEvents |= EPOLLIN;
     }
-    if (events & static_cast<int>(EventType::WRITE)) {
+    if (events & static_cast<int>(EventType::EVT_WRITE)) {
         epollEvents |= EPOLLOUT;
     }
-    if (events & static_cast<int>(EventType::ERROR)) {
+    if (events & static_cast<int>(EventType::EVT_ERROR)) {
         epollEvents |= EPOLLERR;
     }
-    if (events & static_cast<int>(EventType::CLOSE)) {
+    if (events & static_cast<int>(EventType::EVT_CLOSE)) {
         epollEvents |= EPOLLHUP | EPOLLRDHUP;
     }
 
@@ -326,6 +352,30 @@ bool EventReactor::RegisterHandler(std::shared_ptr<EventHandler> handler)
     return true;
 #endif
 }
+
+#ifdef _WIN32
+bool EventReactor::RegisterHandlerWithoutIOCP(std::shared_ptr<EventHandler> handler)
+{
+    if (!handler) {
+        NETWORK_LOGE("Handler is nullptr");
+        return false;
+    }
+
+    socket_t socket = handler->GetHandle();
+    NETWORK_LOGD("[%p] Register handler without IOCP for socket:" SOCKET_FMT, this, socket);
+
+    if (!running_) {
+        NETWORK_LOGE("Reactor has exited");
+        return false;
+    }
+
+    std::unique_lock<std::shared_mutex> lock(mutex_);
+    handlers_.emplace(socket, handler);
+
+    NETWORK_LOGD("Handler registered successfully without IOCP for socket:" SOCKET_FMT, socket);
+    return true;
+}
+#endif
 
 bool EventReactor::RemoveHandler(socket_t fd)
 {
@@ -374,16 +424,16 @@ bool EventReactor::ModifyHandler(socket_t fd, int events)
     }
 
     uint32_t epollEvents = 0;
-    if (events & static_cast<int>(EventType::READ)) {
+    if (events & static_cast<int>(EventType::EVT_READ)) {
         epollEvents |= EPOLLIN;
     }
-    if (events & static_cast<int>(EventType::WRITE)) {
+    if (events & static_cast<int>(EventType::EVT_WRITE)) {
         epollEvents |= EPOLLOUT;
     }
-    if (events & static_cast<int>(EventType::ERROR)) {
+    if (events & static_cast<int>(EventType::EVT_ERROR)) {
         epollEvents |= EPOLLERR;
     }
-    if (events & static_cast<int>(EventType::CLOSE)) {
+    if (events & static_cast<int>(EventType::EVT_CLOSE)) {
         epollEvents |= EPOLLHUP | EPOLLRDHUP;
     }
 
@@ -406,6 +456,8 @@ bool EventReactor::ModifyHandler(socket_t fd, int events)
 
 void EventReactor::DispatchEvent(socket_t fd, int events)
 {
+    NETWORK_LOGD("Dispatching event for fd:" SOCKET_FMT ", events:0x%x", fd, events);
+
     std::shared_lock<std::shared_mutex> lock(mutex_);
     auto it = handlers_.find(fd);
     if (it == handlers_.end()) {
@@ -419,19 +471,23 @@ void EventReactor::DispatchEvent(socket_t fd, int events)
     try {
 #ifdef _WIN32
         // Windows: events are EventType enum values
-        if (events & static_cast<int>(EventType::READ)) {
+        if (events & static_cast<int>(EventType::EVT_READ)) {
+            NETWORK_LOGD("Calling HandleRead for fd:" SOCKET_FMT, fd);
             handler->HandleRead(fd);
         }
 
-        if (events & static_cast<int>(EventType::WRITE)) {
+        if (events & static_cast<int>(EventType::EVT_WRITE)) {
+            NETWORK_LOGD("Calling HandleWrite for fd:" SOCKET_FMT, fd);
             handler->HandleWrite(fd);
         }
 
-        if (events & static_cast<int>(EventType::ERROR)) {
+        if (events & static_cast<int>(EventType::EVT_ERROR)) {
+            NETWORK_LOGD("Calling HandleError for fd:" SOCKET_FMT, fd);
             handler->HandleError(fd);
         }
 
-        if (events & static_cast<int>(EventType::CLOSE)) {
+        if (events & static_cast<int>(EventType::EVT_CLOSE)) {
+            NETWORK_LOGD("Calling HandleClose for fd:" SOCKET_FMT, fd);
             handler->HandleClose(fd);
         }
 #else

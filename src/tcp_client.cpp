@@ -10,10 +10,19 @@
 
 #include "tcp_client.h"
 
+#ifdef _WIN32
+#include <mstcpip.h>
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#pragma comment(lib, "ws2_32.lib")
+#define MSG_NOSIGNAL 0
+#define MSG_DONTWAIT 0
+#else
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#endif
 
 #include <cerrno>
 #include <queue>
@@ -26,7 +35,10 @@ constexpr int RECV_BUFFER_MAX_SIZE = 4096;
 
 class TcpClientHandler : public EventHandler {
 public:
-    TcpClientHandler(socket_t fd, std::weak_ptr<TcpClient> client) : fd_(fd), client_(client), writeEventsEnabled_(false) {}
+    TcpClientHandler(socket_t fd, std::weak_ptr<TcpClient> client)
+        : fd_(fd), client_(client), writeEventsEnabled_(false)
+    {
+    }
 
     void HandleRead(socket_t fd) override
     {
@@ -39,7 +51,7 @@ public:
 
     void HandleError(socket_t fd) override
     {
-        NETWORK_LOGE("Client connection error on fd: %d", fd);
+        NETWORK_LOGE("Client connection error on fd: " SOCKET_FMT, fd);
         if (auto client = client_.lock()) {
             client->HandleConnectionClose(fd, true, "Connection error");
         }
@@ -47,27 +59,26 @@ public:
 
     void HandleClose(socket_t fd) override
     {
-        NETWORK_LOGD("Client connection close on fd: %d", fd);
+        NETWORK_LOGD("Client connection close on fd: " SOCKET_FMT, fd);
         if (auto client = client_.lock()) {
             client->HandleConnectionClose(fd, false, "Connection closed");
         }
     }
 
-    int GetHandle() const override { return fd_; }
+    socket_t GetHandle() const override { return fd_; }
 
     int GetEvents() const override
     {
-        int events =
-            static_cast<int>(EventType::READ) | static_cast<int>(EventType::ERROR) | static_cast<int>(EventType::CLOSE);
+        int events = static_cast<int>(EventType::EVT_READ) | static_cast<int>(EventType::EVT_ERROR) |
+                     static_cast<int>(EventType::EVT_CLOSE);
 
         if (writeEventsEnabled_) {
-            events |= static_cast<int>(EventType::WRITE);
+            events |= static_cast<int>(EventType::EVT_WRITE);
         }
 
         return events;
     }
 
-#ifndef _WIN32
     void QueueSend(std::shared_ptr<DataBuffer> buffer)
     {
         if (!buffer || buffer->Size() == 0)
@@ -95,6 +106,7 @@ private:
 
     void ProcessSendQueue()
     {
+#ifndef _WIN32
         while (!sendQueue_.empty()) {
             auto &buf = sendQueue_.front();
             ssize_t bytesSent = send(fd_, buf->Data(), buf->Size(), MSG_NOSIGNAL);
@@ -121,8 +133,8 @@ private:
         if (sendQueue_.empty()) {
             DisableWriteEvents();
         }
-    }
 #endif
+    }
 
 private:
     socket_t fd_;
@@ -148,10 +160,10 @@ TcpClient::~TcpClient()
 
 bool TcpClient::Init()
 {
-    #ifdef _WIN32
-    socket_ = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+#ifdef _WIN32
+    socket_ = WSASocket(AF_INET, SOCK_STREAM, IPPROTO_TCP, NULL, 0, WSA_FLAG_OVERLAPPED);
     if (socket_ == INVALID_SOCKET) {
-        NETWORK_LOGE("Socket error: %d", WSAGetLastError());
+        NETWORK_LOGE("WSASocket error: %d", WSAGetLastError());
         return false;
     }
     u_long mode = 1;
@@ -161,13 +173,13 @@ bool TcpClient::Init()
         socket_ = INVALID_SOCKET;
         return false;
     }
-    #else
+#else
     socket_ = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
     if (socket_ == INVALID_SOCKET) {
         NETWORK_LOGE("Socket error: %s", strerror(errno));
         return false;
     }
-    #endif
+#endif
 
     if (!localIp_.empty() || localPort_ != 0) {
         struct sockaddr_in localAddr;
@@ -185,7 +197,7 @@ bool TcpClient::Init()
             return false;
         }
         int optval = 1;
-        if (setsockopt(socket_, SOL_SOCKET, SO_REUSEADDR, (const char*)&optval, sizeof(optval)) < 0) {
+        if (setsockopt(socket_, SOL_SOCKET, SO_REUSEADDR, (const char *)&optval, sizeof(optval)) < 0) {
             NETWORK_LOGE("setsockopt SO_REUSEADDR error: %d", WSAGetLastError());
             closesocket(socket_);
             socket_ = INVALID_SOCKET;
@@ -264,7 +276,7 @@ bool TcpClient::Connect()
     int error = 0;
     int len = sizeof(error);
     if (select_n > 0) {
-        if (getsockopt(socket_, SOL_SOCKET, SO_ERROR, (char*)&error, &len) == SOCKET_ERROR) {
+        if (getsockopt(socket_, SOL_SOCKET, SO_ERROR, (char *)&error, &len) == SOCKET_ERROR) {
             NETWORK_LOGE("getsockopt error, %d", WSAGetLastError());
             ReInit();
             return false;
@@ -363,7 +375,7 @@ bool TcpClient::Send(std::shared_ptr<DataBuffer> data)
     // TODO: loop until the data is sent completely
     DWORD bytesSent = 0;
     WSABUF wsaBuf;
-    wsaBuf.buf = (CHAR*)data->Data();
+    wsaBuf.buf = (CHAR *)data->Data();
     wsaBuf.len = (ULONG)data->Size();
     int ret = WSASend(socket_, &wsaBuf, 1, &bytesSent, 0, NULL, NULL);
     if (ret == SOCKET_ERROR || bytesSent != data->Size()) {
@@ -393,14 +405,14 @@ void TcpClient::Close()
 
 void TcpClient::HandleReceive(socket_t fd)
 {
-    NETWORK_LOGD("fd: %d", fd);
+    NETWORK_LOGD("fd: " SOCKET_FMT, fd);
     if (readBuffer_ == nullptr) {
         readBuffer_ = DataBuffer::PoolAlloc(RECV_BUFFER_MAX_SIZE);
     }
 
     while (true) {
 #ifdef _WIN32
-        int nbytes = recv(fd, (char*)readBuffer_->Data(), (int)readBuffer_->Capacity(), 0);
+        int nbytes = recv(fd, (char *)readBuffer_->Data(), (int)readBuffer_->Capacity(), 0);
 #else
         ssize_t nbytes = recv(fd, readBuffer_->Data(), readBuffer_->Capacity(), MSG_DONTWAIT);
 #endif
@@ -421,7 +433,7 @@ void TcpClient::HandleReceive(socket_t fd)
             }
             continue;
         } else if (nbytes == 0) {
-            NETWORK_LOGW("Disconnect fd[%d]", fd);
+            NETWORK_LOGW("Disconnect fd[" SOCKET_FMT "]", fd);
             break;
         } else {
 #ifdef _WIN32
@@ -447,11 +459,11 @@ void TcpClient::HandleReceive(socket_t fd)
 
 void TcpClient::HandleConnectionClose(socket_t fd, bool isError, const std::string &reason)
 {
-    NETWORK_LOGD("Closing client connection fd: %d, reason: %s, isError: %s", fd, reason.c_str(),
+    NETWORK_LOGD("Closing client connection fd: " SOCKET_FMT ", reason: %s, isError: %s", fd, reason.c_str(),
                  isError ? "true" : "false");
 
     if (socket_ != fd) {
-        NETWORK_LOGD("Connection fd: %d already cleaned up", fd);
+        NETWORK_LOGD("Connection fd: " SOCKET_FMT " already cleaned up", fd);
         return;
     }
 

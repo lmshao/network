@@ -15,8 +15,6 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #pragma comment(lib, "ws2_32.lib")
-#define MSG_NOSIGNAL 0
-#define MSG_DONTWAIT 0
 #else
 #include <arpa/inet.h>
 #include <fcntl.h>
@@ -88,8 +86,8 @@ public:
 
     int GetEvents() const override
     {
-        return static_cast<int>(EventType::READ) | static_cast<int>(EventType::ERROR) |
-               static_cast<int>(EventType::CLOSE);
+        return static_cast<int>(EventType::EVT_READ) | static_cast<int>(EventType::EVT_ERROR) |
+               static_cast<int>(EventType::EVT_CLOSE);
     }
 
 private:
@@ -98,7 +96,8 @@ private:
 
 class TcpConnectionHandler : public EventHandler {
 public:
-    TcpConnectionHandler(socket_t fd, std::weak_ptr<TcpServer> server) : fd_(fd), server_(server), writeEventsEnabled_(false)
+    TcpConnectionHandler(socket_t fd, std::weak_ptr<TcpServer> server)
+        : fd_(fd), server_(server), writeEventsEnabled_(false)
     {
     }
 
@@ -113,7 +112,7 @@ public:
 
     void HandleError(socket_t fd) override
     {
-        NETWORK_LOGE("Connection error on fd: %d", fd);
+        NETWORK_LOGE("Connection error on fd: " SOCKET_FMT, fd);
         if (auto server = server_.lock()) {
             server->HandleConnectionClose(fd, true, "Connection error");
         }
@@ -121,7 +120,7 @@ public:
 
     void HandleClose(socket_t fd) override
     {
-        NETWORK_LOGD("Connection close on fd: %d", fd);
+        NETWORK_LOGD("Connection close on fd: " SOCKET_FMT, fd);
         if (auto server = server_.lock()) {
             server->HandleConnectionClose(fd, false, "Connection closed");
         }
@@ -131,11 +130,11 @@ public:
 
     int GetEvents() const override
     {
-        int events =
-            static_cast<int>(EventType::READ) | static_cast<int>(EventType::ERROR) | static_cast<int>(EventType::CLOSE);
+        int events = static_cast<int>(EventType::EVT_READ) | static_cast<int>(EventType::EVT_ERROR) |
+                     static_cast<int>(EventType::EVT_CLOSE);
 
         if (writeEventsEnabled_) {
-            events |= static_cast<int>(EventType::WRITE);
+            events |= static_cast<int>(EventType::EVT_WRITE);
         }
 
         return events;
@@ -168,6 +167,7 @@ private:
 
     void ProcessSendQueue()
     {
+#ifndef _WIN32
         while (!sendQueue_.empty()) {
             auto &buf = sendQueue_.front();
             ssize_t bytesSent = send(fd_, reinterpret_cast<const char *>(buf->Data()), buf->Size(), MSG_NOSIGNAL);
@@ -193,6 +193,7 @@ private:
         if (sendQueue_.empty()) {
             DisableWriteEvents();
         }
+#endif
     }
 
 private:
@@ -218,9 +219,9 @@ bool TcpServer::Init()
         return false;
     }
 
-    socket_ = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    socket_ = WSASocket(AF_INET, SOCK_STREAM, IPPROTO_TCP, NULL, 0, WSA_FLAG_OVERLAPPED);
     if (socket_ == INVALID_SOCKET) {
-        NETWORK_LOGE("socket error: %d", WSAGetLastError());
+        NETWORK_LOGE("WSASocket error: %d", WSAGetLastError());
         WSACleanup();
         return false;
     }
@@ -392,7 +393,7 @@ bool TcpServer::Send(socket_t fd, std::string host, uint16_t port, std::shared_p
             return true;
         }
     }
-    NETWORK_LOGE("Connection handler not found for fd: %d", fd);
+    NETWORK_LOGE("Connection handler not found for fd: " SOCKET_FMT, fd);
     return false;
 }
 
@@ -439,7 +440,7 @@ void TcpServer::HandleAccept(socket_t fd)
     auto connectionHandler = std::make_shared<TcpConnectionHandler>(clientFd, shared_from_this());
     if (!EventReactor::GetInstance()->RegisterHandler(connectionHandler)) {
         NETWORK_LOGE("Failed to register connection handler for fd: %d", clientFd);
-        CloseSocket(clientFd);
+        close(clientFd);
         return;
     }
 
@@ -450,7 +451,7 @@ void TcpServer::HandleAccept(socket_t fd)
     std::string host = inet_ntoa(clientAddr.sin_addr);
     uint16_t port = ntohs(clientAddr.sin_port);
 
-    NETWORK_LOGD("New client connections client[%d] %s:%d\n", clientFd, inet_ntoa(clientAddr.sin_addr),
+    NETWORK_LOGD("New client connections client[" SOCKET_FMT "] %s:%d\n", clientFd, inet_ntoa(clientAddr.sin_addr),
                  ntohs(clientAddr.sin_port));
 
     auto session = std::make_shared<SessionImpl>(clientFd, host, port, shared_from_this());
@@ -478,7 +479,7 @@ void TcpServer::HandleAccept(socket_t fd)
 
 void TcpServer::HandleReceive(socket_t fd)
 {
-    NETWORK_LOGD("fd: %d", fd);
+    NETWORK_LOGD("fd: " SOCKET_FMT, fd);
     if (readBuffer_ == nullptr) {
         readBuffer_ = std::make_unique<DataBuffer>(RECV_BUFFER_MAX_SIZE);
     }
@@ -517,7 +518,7 @@ void TcpServer::HandleReceive(socket_t fd)
             }
             continue;
         } else if (nbytes == 0) {
-            NETWORK_LOGW("Disconnect fd[%d]", fd);
+            NETWORK_LOGW("Disconnect fd[" SOCKET_FMT "]", fd);
             // Do not call HandleConnectionClose directly; let the event system handle EPOLLHUP
             break;
         } else {
@@ -555,11 +556,12 @@ void TcpServer::EnableKeepAlive(socket_t fd)
 
 void TcpServer::HandleConnectionClose(socket_t fd, bool isError, const std::string &reason)
 {
-    NETWORK_LOGD("Closing connection fd: %d, reason: %s, isError: %s", fd, reason.c_str(), isError ? "true" : "false");
+    NETWORK_LOGD("Closing connection fd: " SOCKET_FMT ", reason: %s, isError: %s", fd, reason.c_str(),
+                 isError ? "true" : "false");
 
     auto sessionIt = sessions_.find(fd);
     if (sessionIt == sessions_.end()) {
-        NETWORK_LOGD("Connection fd: %d already cleaned up", fd);
+        NETWORK_LOGD("Connection fd: " SOCKET_FMT " already cleaned up", fd);
         return;
     }
 

@@ -16,15 +16,15 @@ namespace lmshao::network {
 #ifdef _WIN32
 
 #include <windows.h>
-
-typedef DWORD      pid_t;
-typedef SOCKET     socket_t;
-typedef int        socklen_t;
-typedef int        ssize_t;
+typedef DWORD pid_t;
+typedef SOCKET socket_t;
+typedef int socklen_t;
+typedef int ssize_t;
 
 constexpr int MSG_DONTWAIT = 0;
 
-inline int close(SOCKET s) {
+inline int close(SOCKET s)
+{
     return closesocket(s);
 }
 

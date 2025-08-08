@@ -65,13 +65,13 @@ TEST(UdpTest, ServerClientSendRecv)
         std::atomic<bool> &received;
         std::string &recv_data;
         ClientListener(std::atomic<bool> &r, std::string &d) : received(r), recv_data(d) {}
-        void OnReceive(int, std::shared_ptr<DataBuffer> data) override
+        void OnReceive(socket_t, std::shared_ptr<DataBuffer> data) override
         {
             recv_data = data->ToString();
             received = true;
         }
-        void OnClose(int) override {}
-        void OnError(int, const std::string &) override {}
+        void OnClose(socket_t) override {}
+        void OnError(socket_t, const std::string &) override {}
     };
 
     // Start server

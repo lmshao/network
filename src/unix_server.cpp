@@ -49,8 +49,8 @@ public:
 
     int GetEvents() const override
     {
-        return static_cast<int>(EventType::READ) | static_cast<int>(EventType::ERROR) |
-               static_cast<int>(EventType::CLOSE);
+        return static_cast<int>(EventType::EVT_READ) | static_cast<int>(EventType::EVT_ERROR) |
+               static_cast<int>(EventType::EVT_CLOSE);
     }
 
 private:
@@ -90,10 +90,10 @@ public:
 
     int GetEvents() const override
     {
-        int events =
-            static_cast<int>(EventType::READ) | static_cast<int>(EventType::ERROR) | static_cast<int>(EventType::CLOSE);
+        int events = static_cast<int>(EventType::EVT_READ) | static_cast<int>(EventType::EVT_ERROR) |
+                     static_cast<int>(EventType::EVT_CLOSE);
         if (writeEventsEnabled_)
-            events |= static_cast<int>(EventType::WRITE);
+            events |= static_cast<int>(EventType::EVT_WRITE);
         return events;
     }
 

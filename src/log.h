@@ -15,6 +15,8 @@
 
 namespace lmshao::network {
 
+std::string Time();
+
 #ifdef _WIN32
 #include <string.h>
 #include <windows.h>
@@ -22,8 +24,10 @@ namespace lmshao::network {
 #define FUNC_NAME_ __FUNCTION__
 #define SOCKET_FMT "%llu"
 
-#define NETWORK_LOG_IMPL(color_start, color_end, fmt, ...) \
-    do { \
+#define NETWORK_LOG_IMPL(color_start, color_end, fmt, ...)                                                             \
+    do {                                                                                                               \
+        auto timestamp = Time();                                                                                       \
+        printf("%s - %s:%d - %s: " fmt "\n", timestamp.c_str(), FILENAME_, __LINE__, FUNC_NAME_, ##__VA_ARGS__);       \
     } while (0)
 #else // not _WIN32
 
@@ -31,9 +35,6 @@ namespace lmshao::network {
 #define FUNC_NAME_ __PRETTY_FUNCTION__
 #define SOCKET_FMT "%d"
 
-std::string Time();
-
-// 统一的日志实现宏
 #define NETWORK_LOG_IMPL(color_start, color_end, fmt, ...)                                                             \
     do {                                                                                                               \
         auto timestamp = Time();                                                                                       \
