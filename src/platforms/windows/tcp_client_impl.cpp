@@ -23,6 +23,8 @@
 
 namespace lmshao::network {
 
+using lmshao::DataBuffer;
+
 struct TcpClientPerIo {
     OVERLAPPED ov{};
     WSABUF buf{};

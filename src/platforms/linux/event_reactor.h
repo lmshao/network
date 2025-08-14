@@ -19,7 +19,7 @@
 #include <unordered_map>
 
 #include "common.h"
-#include "singleton.h"
+#include "core-utils/singleton.h"
 
 namespace lmshao::network {
 enum class EventType {

@@ -23,6 +23,8 @@
 
 namespace lmshao::network {
 
+using lmshao::DataBuffer;
+
 // ------------- IOCP based implementation -------------
 class UdpSessionWin final : public Session {
 public:

@@ -13,10 +13,12 @@
 
 #include <memory>
 
-#include "data_buffer.h"
+#include "core-utils/data_buffer.h"
 #include "session.h"
 
 namespace lmshao::network {
+
+using lmshao::DataBuffer;
 
 class IServerListener {
 public:

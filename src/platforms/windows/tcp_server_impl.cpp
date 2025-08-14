@@ -28,6 +28,8 @@
 
 namespace lmshao::network {
 
+using lmshao::DataBuffer;
+
 // 复用 SessionImpl 作为 TCP 会话对象
 
 struct PerIoContextTCP {

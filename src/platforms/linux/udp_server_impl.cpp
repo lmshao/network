@@ -25,6 +25,8 @@
 
 namespace lmshao::network {
 
+using lmshao::DataBuffer;
+
 // UDP Session implementation
 class UdpSession : public Session {
 public:

@@ -23,6 +23,7 @@
 
 namespace lmshao::network {
 
+using lmshao::DataBuffer;
 using PerIoContext = UdpPerIoContext;
 
 UdpClientImpl::UdpClientImpl(std::string remoteIp, uint16_t remotePort, std::string localIp, uint16_t localPort)

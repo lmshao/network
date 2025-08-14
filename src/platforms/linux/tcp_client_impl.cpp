@@ -22,7 +22,9 @@
 #include "network_log.h"
 
 namespace lmshao::network {
-constexpr int RECV_BUFFER_MAX_SIZE = 4096;
+using lmshao::DataBuffer;
+
+const int RECV_BUFFER_MAX_SIZE = 4096;
 
 class TcpClientHandler : public EventHandler {
 public:
