@@ -9,14 +9,14 @@
 #ifndef LMSHAO_NETWORK_BASE_SERVER_H
 #define LMSHAO_NETWORK_BASE_SERVER_H
 
-#include <coreutils/data_buffer.h>
+#include <lmcore/data_buffer.h>
 
 #include <memory>
 
-#include "network/common.h"
+#include "lmnet/common.h"
 
-namespace lmshao::network {
-using namespace lmshao::coreutils;
+namespace lmshao::lmnet {
+using namespace lmshao::lmcore;
 
 class IServerListener;
 class BaseServer {
@@ -32,6 +32,6 @@ public:
     virtual socket_t GetSocketFd() const = 0;
 };
 
-} // namespace lmshao::network
+} // namespace lmshao::lmnet
 
 #endif // LMSHAO_NETWORK_BASE_SERVER_H

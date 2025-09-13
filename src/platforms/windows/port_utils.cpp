@@ -13,7 +13,7 @@
 #include <mutex>
 
 #include "iocp_utils.h"
-#include "network/common.h"
+#include "lmnet/common.h"
 
 namespace lmshao {
 namespace network {

@@ -21,7 +21,7 @@
 #include <cstring>
 #include <memory>
 
-namespace lmshao::network {
+namespace lmshao::lmnet {
 using PerIoContext = UdpPerIoContext;
 
 UdpClientImpl::UdpClientImpl(std::string remoteIp, uint16_t remotePort, std::string localIp, uint16_t localPort)
@@ -259,4 +259,4 @@ void UdpClientImpl::HandleConnectionClose(socket_t fd, bool error, const std::st
     (void)info;
 }
 
-} // namespace lmshao::network
+} // namespace lmshao::lmnet

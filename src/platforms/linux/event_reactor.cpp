@@ -23,7 +23,7 @@ constexpr int INVALID_WAKEUP_FD = -1;
 constexpr int EPOLL_WAIT_EVENT_NUMS_MAX = 1024;
 } // namespace
 
-namespace lmshao::network {
+namespace lmshao::lmnet {
 EventReactor::EventReactor() : wakeupFd_(INVALID_WAKEUP_FD)
 {
     wakeupFd_ = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
@@ -282,4 +282,4 @@ void EventReactor::DispatchEvent(socket_t fd, int events)
         NETWORK_LOGE("Unknown exception in event handler for fd %d", fd);
     }
 }
-} // namespace lmshao::network
+} // namespace lmshao::lmnet

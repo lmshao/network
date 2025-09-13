@@ -16,7 +16,7 @@
 
 #include "../../internal_logger.h"
 
-namespace lmshao::network {
+namespace lmshao::lmnet {
 
 uint16_t PortUtils::nextPort_ = PortUtils::UDP_PORT_START;
 
@@ -80,4 +80,4 @@ uint16_t PortUtils::GetIdleUdpPortPair()
     }
 }
 
-} // namespace lmshao::network
+} // namespace lmshao::lmnet

@@ -6,7 +6,7 @@
  * SPDX-License-Identifier: MIT
  */
 
-#include "network/udp_server.h"
+#include "lmnet/udp_server.h"
 
 #include "internal_logger.h"
 
@@ -18,7 +18,7 @@
 #include "platforms/windows/udp_server_impl.h"
 #endif
 
-namespace lmshao::network {
+namespace lmshao::lmnet {
 
 UdpServer::UdpServer(std::string listenIp, uint16_t listenPort)
 {
@@ -87,4 +87,4 @@ uint16_t UdpServer::GetIdlePortPair()
     return PortUtils::GetIdleUdpPortPair();
 }
 
-} // namespace lmshao::network
+} // namespace lmshao::lmnet

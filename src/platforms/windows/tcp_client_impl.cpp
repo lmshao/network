@@ -21,7 +21,7 @@
 #include <cstring>
 #include <thread>
 
-namespace lmshao::network {
+namespace lmshao::lmnet {
 
 struct TcpClientPerIo {
     OVERLAPPED ov{};
@@ -275,4 +275,4 @@ socket_t TcpClientImpl::GetSocketFd() const
     return socket_;
 }
 
-} // namespace lmshao::network
+} // namespace lmshao::lmnet

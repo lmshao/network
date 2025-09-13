@@ -10,10 +10,10 @@
 #define LMSHAO_NETWORK_SESSION_IMPL_H
 
 #include "base_server.h"
-#include "network/session.h"
+#include "lmnet/session.h"
 
-namespace lmshao::network {
-using namespace lmshao::coreutils;
+namespace lmshao::lmnet {
+using namespace lmshao::lmcore;
 
 class SessionImpl : public Session {
 public:
@@ -64,5 +64,5 @@ private:
     std::weak_ptr<BaseServer> server_;
 };
 
-} // namespace lmshao::network
+} // namespace lmshao::lmnet
 #endif // LMSHAO_NETWORK_SESSION_IMPL_H

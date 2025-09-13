@@ -19,9 +19,9 @@
 
 #include "../../internal_logger.h"
 #include "event_reactor.h"
-#include "network/session.h"
+#include "lmnet/session.h"
 
-namespace lmshao::network {
+namespace lmshao::lmnet {
 
 // UDP Session implementation
 class UdpSession : public Session {
@@ -317,4 +317,4 @@ bool UdpServerImpl::Send(socket_t fd, std::string ip, uint16_t port, std::shared
     return Send(fd, std::move(ip), port, data->Data(), data->Size());
 }
 
-} // namespace lmshao::network
+} // namespace lmshao::lmnet

@@ -8,7 +8,7 @@ set(NETWORK_VERSION @PROJECT_VERSION@)
 
 # Find required dependencies
 find_dependency(Threads)
-find_dependency(coreutils)
+find_dependency(lmcore)
 
 # Include target definitions
 include("${CMAKE_CURRENT_LIST_DIR}/networkTargets.cmake")

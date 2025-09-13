@@ -11,9 +11,9 @@
 #ifndef LMSHAO_NETWORK_IOCP_UTILS_H
 #define LMSHAO_NETWORK_IOCP_UTILS_H
 
-#include "network/common.h"
+#include "lmnet/common.h"
 
-namespace lmshao::network {
+namespace lmshao::lmnet {
 
 // Global WSA startup / cleanup using singleton pattern
 struct WsaGlobalInit {
@@ -68,6 +68,6 @@ inline int PostUdpRecv(SOCKET s, UdpPerIoContext *ctx)
     return 0; // success or pending
 }
 
-} // namespace lmshao::network
+} // namespace lmshao::lmnet
 
 #endif // LMSHAO_NETWORK_IOCP_UTILS_H

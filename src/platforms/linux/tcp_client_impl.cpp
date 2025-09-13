@@ -19,7 +19,7 @@
 #include "../../internal_logger.h"
 #include "event_reactor.h"
 
-namespace lmshao::network {
+namespace lmshao::lmnet {
 
 const int RECV_BUFFER_MAX_SIZE = 4096;
 
@@ -383,4 +383,4 @@ void TcpClientImpl::HandleConnectionClose(socket_t fd, bool isError, const std::
         }
     }
 }
-} // namespace lmshao::network
+} // namespace lmshao::lmnet

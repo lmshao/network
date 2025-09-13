@@ -16,12 +16,12 @@
 #include "../../internal_logger.h"
 #include "iocp_manager.h"
 #include "iocp_utils.h"
-#include "network/session.h"
+#include "lmnet/session.h"
 #pragma comment(lib, "ws2_32.lib")
 
 #include <cstring>
 
-namespace lmshao::network {
+namespace lmshao::lmnet {
 
 // ------------- IOCP based implementation -------------
 class UdpSessionWin final : public Session {
@@ -253,4 +253,4 @@ void UdpServerImpl::HandlePacket(const char *data, size_t len, const sockaddr_in
     listener_->OnReceive(session, buf);
 }
 
-} // namespace lmshao::network
+} // namespace lmshao::lmnet

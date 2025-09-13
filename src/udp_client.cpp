@@ -6,7 +6,7 @@
  * SPDX-License-Identifier: MIT
  */
 
-#include "network/udp_client.h"
+#include "lmnet/udp_client.h"
 
 #include "internal_logger.h"
 
@@ -16,7 +16,7 @@
 #include "platforms/windows/udp_client_impl.h"
 #endif
 
-namespace lmshao::network {
+namespace lmshao::lmnet {
 
 UdpClient::UdpClient(std::string remoteIp, uint16_t remotePort, std::string localIp, uint16_t localPort)
 {
@@ -101,4 +101,4 @@ socket_t UdpClient::GetSocketFd() const
     return impl_->GetSocketFd();
 }
 
-} // namespace lmshao::network
+} // namespace lmshao::lmnet

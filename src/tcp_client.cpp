@@ -6,7 +6,7 @@
  * SPDX-License-Identifier: MIT
  */
 
-#include "network/tcp_client.h"
+#include "lmnet/tcp_client.h"
 
 #include "internal_logger.h"
 
@@ -16,7 +16,7 @@
 #include "platforms/windows/tcp_client_impl.h"
 #endif
 
-namespace lmshao::network {
+namespace lmshao::lmnet {
 
 TcpClient::TcpClient(std::string remoteIp, uint16_t remotePort, std::string localIp, uint16_t localPort)
 {
@@ -100,4 +100,4 @@ socket_t TcpClient::GetSocketFd() const
     return impl_->GetSocketFd();
 }
 
-} // namespace lmshao::network
+} // namespace lmshao::lmnet

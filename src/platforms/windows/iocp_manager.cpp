@@ -22,7 +22,7 @@
 #undef min
 #endif
 
-namespace lmshao::network {
+namespace lmshao::lmnet {
 IocpManager::~IocpManager()
 {
     Shutdown();
@@ -211,4 +211,4 @@ void IocpManager::CleanupResources()
     }
 }
 
-} // namespace lmshao::network
+} // namespace lmshao::lmnet

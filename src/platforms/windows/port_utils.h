@@ -13,7 +13,7 @@
 
 #include <cstdint>
 
-namespace lmshao::network {
+namespace lmshao::lmnet {
 
 class PortUtils {
 public:
@@ -34,6 +34,6 @@ private:
     static uint16_t nextPort_;
 };
 
-} // namespace lmshao::network
+} // namespace lmshao::lmnet
 
 #endif // LMSHAO_NETWORK_WINDOWS_PORT_UTILS_H

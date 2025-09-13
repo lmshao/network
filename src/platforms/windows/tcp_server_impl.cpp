@@ -16,7 +16,7 @@
 #include "../../internal_logger.h"
 #include "iocp_manager.h"
 #include "iocp_utils.h"
-#include "network/session.h"
+#include "lmnet/session.h"
 #include "session_impl.h"
 #pragma comment(lib, "ws2_32.lib")
 
@@ -26,7 +26,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace lmshao::network {
+namespace lmshao::lmnet {
 struct PerIoContextTCP {
     OVERLAPPED ov{};
     WSABUF buf{};
@@ -352,4 +352,4 @@ bool TcpServerImpl::Send(socket_t fd, std::string host, uint16_t port, const std
     return Send(fd, std::move(host), port, str.data(), str.size());
 }
 
-} // namespace lmshao::network
+} // namespace lmshao::lmnet

@@ -11,7 +11,7 @@
 #error "Unix domain sockets are not supported on this platform"
 #endif
 
-#include "network/unix_client.h"
+#include "lmnet/unix_client.h"
 
 #include "internal_logger.h"
 #include "iunix_client.h"
@@ -20,7 +20,7 @@
 #include "platforms/linux/unix_client_impl.h"
 #endif
 
-namespace lmshao::network {
+namespace lmshao::lmnet {
 
 UnixClient::UnixClient(const std::string &socketPath)
 {
@@ -104,4 +104,4 @@ socket_t UnixClient::GetSocketFd() const
     return impl_->GetSocketFd();
 }
 
-} // namespace lmshao::network
+} // namespace lmshao::lmnet

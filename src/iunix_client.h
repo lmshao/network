@@ -14,17 +14,17 @@
 #error "Unix domain sockets are not supported on this platform"
 #endif
 
-#include <coreutils/data_buffer.h>
+#include <lmcore/data_buffer.h>
 
 #include <cstdint>
 #include <memory>
 #include <string>
 
-#include "network/common.h"
-#include "network/iclient_listener.h"
+#include "lmnet/common.h"
+#include "lmnet/iclient_listener.h"
 
-namespace lmshao::network {
-using namespace lmshao::coreutils;
+namespace lmshao::lmnet {
+using namespace lmshao::lmcore;
 
 class IUnixClient {
 public:
@@ -40,6 +40,6 @@ public:
     virtual socket_t GetSocketFd() const = 0;
 };
 
-} // namespace lmshao::network
+} // namespace lmshao::lmnet
 
 #endif // LMSHAO_NETWORK_I_UNIX_CLIENT_H
